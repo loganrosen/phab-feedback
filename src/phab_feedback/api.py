@@ -44,6 +44,85 @@ class ConduitClient:
             raise APIError(f"Conduit {method} returned no result")
         return payload["result"]
 
+    def search(
+        self,
+        method: str,
+        constraints: Mapping[str, Any],
+        *,
+        attachments: Mapping[str, bool] | None = None,
+        order: str | None = None,
+        after: str | None = None,
+        limit: int | None = None,
+        extra: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"constraints": dict(constraints)}
+        if attachments:
+            params["attachments"] = dict(attachments)
+        if order is not None:
+            params["order"] = order
+        if extra:
+            params.update(extra)
+        return self.paginate(method, params, after=after, limit=limit)
+
+    def paginate(
+        self,
+        method: str,
+        params: Mapping[str, Any],
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
+
+        objects: list[dict[str, Any]] = []
+        final_cursor: dict[str, Any] = {}
+        next_after = after
+        seen_cursors = {after} if after is not None else set()
+
+        while True:
+            page_params = dict(params)
+            if next_after is not None:
+                page_params["after"] = next_after
+
+            if limit is not None:
+                remaining = limit - len(objects)
+                if remaining <= 0:
+                    break
+                page_params["limit"] = min(remaining, 100)
+            elif "limit" not in page_params:
+                page_params["limit"] = 100
+
+            result = self.call(method, page_params)
+            if not isinstance(result, dict):
+                raise APIError(f"{method} returned invalid data")
+
+            page = result.get("data")
+            if not isinstance(page, list):
+                raise APIError(f"{method} returned invalid result data")
+            if not all(isinstance(item, dict) for item in page):
+                raise APIError(f"{method} returned an invalid result item")
+            if limit is None:
+                objects.extend(page)
+            else:
+                objects.extend(page[: limit - len(objects)])
+
+            cursor = result.get("cursor") or {}
+            if not isinstance(cursor, dict):
+                raise APIError(f"{method} returned invalid cursor data")
+            final_cursor = cursor
+            next_after = cursor.get("after")
+            if not next_after or not page:
+                break
+            if next_after in seen_cursors:
+                raise APIError(f"{method} returned a repeated cursor")
+            seen_cursors.add(next_after)
+
+        return {
+            "data": objects,
+            "cursor": final_cursor,
+        }
+
 
 class WebClient:
     def __init__(self, host: str, cookie_header: str, transport: Transport) -> None:
