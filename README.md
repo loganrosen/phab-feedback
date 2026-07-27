@@ -7,10 +7,13 @@ for both people and automation.
 
 ## How this differs
 
-`arc` and `moz-phab` handle author-side Differential workflows such as creating
-or updating revisions from local commits, with `arc` also providing landing
-workflows. `phabfive` provides broader Conduit-based access to Phabricator and
-Phorge applications such as Maniphest, Paste, Diffusion, Passphrase, and User.
+[`arc`](https://we.phorge.it/book/phorge/article/arcanist/) and
+[`moz-phab`](https://github.com/mozilla-conduit/review) handle author-side
+Differential workflows such as creating or updating revisions from local
+commits, with `arc` also providing landing workflows.
+[`phabfive`](https://github.com/dynamist/phabfive) provides broader
+Conduit-based access to Phabricator and Phorge applications such as Maniphest,
+Paste, Diffusion, Passphrase, and User.
 
 `phab-feedback` complements those tools by focusing on structured Differential
 feedback, inline threads, explicit draft actions, and browser-only mutations
