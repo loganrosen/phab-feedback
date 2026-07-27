@@ -5,6 +5,19 @@ Phabricator and Phorge feedback. It keeps inline replies as real inline-thread
 replies, exposes draft actions explicitly, and produces structured JSON suitable
 for both people and automation.
 
+## How this differs
+
+`arc` and `moz-phab` handle author-side Differential workflows such as creating
+or updating revisions from local commits, with `arc` also providing landing
+workflows. `phabfive` provides broader Conduit-based access to Phabricator and
+Phorge applications such as Maniphest, Paste, Diffusion, Passphrase, and User.
+
+`phab-feedback` complements those tools by focusing on structured Differential
+feedback, inline threads, explicit draft actions, and browser-only mutations
+that Conduit does not expose. Its optional Mozilla Review Helper rating and
+AI-review commands remain isolated from the generic Phabricator and Phorge
+behavior.
+
 ## Install
 
 Python 3.10 or newer is required.
