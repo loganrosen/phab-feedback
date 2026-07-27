@@ -9,14 +9,37 @@ for both people and automation.
 
 Python 3.10 or newer is required.
 
+After the first PyPI release is published, run the CLI without installing it:
+
 ```bash
-python3 -m pip install .
+uvx phab-feedback --help
+```
+
+For a persistent installation, `uv` is recommended:
+
+```bash
+uv tool install phab-feedback
 phab-feedback --help
 ```
 
-For development:
+`pipx` is an alternative:
 
 ```bash
+pipx install phab-feedback
+phab-feedback --help
+```
+
+To try unreleased development from GitHub:
+
+```bash
+uv tool install git+https://github.com/loganrosen/phab-feedback.git
+```
+
+For local source development:
+
+```bash
+git clone https://github.com/loganrosen/phab-feedback.git
+cd phab-feedback
 python3 -m pip install -e .
 python3 -m unittest discover -s tests
 ```

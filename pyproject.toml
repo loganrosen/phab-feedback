@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,28 +8,34 @@ version = "0.1.0"
 description = "CLI for Phabricator and Phorge review feedback workflows"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {file = "LICENSE"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{name = "Logan Rosen"}]
 keywords = ["phabricator", "phorge", "code-review", "cli"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
-  "License :: OSI Approved :: MIT License",
+  "Intended Audience :: Developers",
   "Operating System :: MacOS",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Version Control",
+  "Typing :: Typed",
 ]
 
 [project.scripts]
 phab-feedback = "phab_feedback.cli:main"
 
 [project.urls]
+Homepage = "https://github.com/loganrosen/phab-feedback"
 Repository = "https://github.com/loganrosen/phab-feedback"
+Issues = "https://github.com/loganrosen/phab-feedback/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
