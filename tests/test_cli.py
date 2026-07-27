@@ -11,7 +11,7 @@ from .helpers import FakeTransport, conduit_result
 
 
 class StubResolver:
-    def resolve(self, **kwargs):
+    def resolve(self, **kwargs: object) -> Credentials:
         return Credentials(
             host="https://phab.example",
             conduit_token="token",

@@ -39,3 +39,9 @@ Issues = "https://github.com/loganrosen/phab-feedback/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ty==0.0.63",
+]

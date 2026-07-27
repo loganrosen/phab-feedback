@@ -8,6 +8,17 @@ permissions:
   contents: read
 
 jobs:
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv run --locked ty check --error-on-warning --output-format github
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -20,6 +31,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install .
-      - run: python -m unittest discover -s tests -t . -v
-      - run: phab-feedback --help
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv run --locked pytest -v
+      - run: uv run --locked phab-feedback --help

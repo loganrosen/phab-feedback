@@ -10,7 +10,7 @@ import sqlite3
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Protocol
 from urllib.parse import urlsplit
 
 from .errors import ConfigurationError
@@ -21,6 +21,19 @@ class Credentials:
     host: str
     conduit_token: str | None = None
     cookie_header: str | None = None
+
+
+class CredentialResolver(Protocol):
+    def resolve(
+        self,
+        *,
+        cli_host: str | None,
+        config_path: Path | None,
+        require_token: bool,
+        require_cookie: bool,
+        firefox_cookies: bool,
+        firefox_profile: Path | None,
+    ) -> Credentials: ...
 
 
 class ConfigResolver:
@@ -110,7 +123,11 @@ class ConfigResolver:
             return normalize_host(configured)
 
         hosts = arcrc.get("hosts")
-        available = list(hosts) if isinstance(hosts, dict) else []
+        available = (
+            [candidate for candidate in hosts if isinstance(candidate, str)]
+            if isinstance(hosts, dict)
+            else []
+        )
         if len(available) == 1:
             return normalize_host(available[0])
         if not available:
@@ -132,8 +149,10 @@ class ConfigResolver:
         hosts = arcrc.get("hosts")
         if isinstance(hosts, dict):
             for candidate, raw_settings in hosts.items():
-                if normalize_host(candidate) != host or not isinstance(
-                    raw_settings, dict
+                if (
+                    not isinstance(candidate, str)
+                    or normalize_host(candidate) != host
+                    or not isinstance(raw_settings, dict)
                 ):
                     continue
                 value = raw_settings.get("token")

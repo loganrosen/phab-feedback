@@ -180,8 +180,9 @@ or `uvx phab-feedback` as a non-persistent fallback.
 ```bash
 git clone https://github.com/loganrosen/phab-feedback.git
 cd phab-feedback
-python3 -m pip install -e .
-python3 -m unittest discover
+uv sync --locked
+uv run ty check --error-on-warning
+uv run pytest
 ```
 
 ## Security

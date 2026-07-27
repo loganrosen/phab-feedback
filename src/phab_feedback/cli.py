@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Sequence, TextIO
 
 from .api import ConduitClient, WebClient
-from .config import ConfigResolver
+from .config import ConfigResolver, CredentialResolver
 from .errors import PhabFeedbackError, ValidationError
 from .service import FeedbackService
 from .transport import Transport, UrllibTransport
@@ -180,7 +180,7 @@ def run(
     stdin: TextIO = sys.stdin,
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
-    resolver: ConfigResolver | None = None,
+    resolver: CredentialResolver | None = None,
     transport: Transport | None = None,
 ) -> int:
     parser = build_parser()
