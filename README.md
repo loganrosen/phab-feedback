@@ -1,9 +1,10 @@
 # phab-feedback
 
-`phab-feedback` is a small command-line client for inspecting and acting on
-Phabricator and Phorge review feedback. It preserves inline replies as real
-inline-thread replies, keeps draft actions explicit, and writes structured JSON
-for people and automation.
+`phab-feedback` is a small command-line client for discovering, inspecting, and
+acting on Phabricator and Phorge review feedback. It groups inline conversations
+without losing exact comment IDs, preserves inline replies as real thread
+replies, keeps draft actions explicit, and writes structured JSON for people and
+automation.
 
 ## How this differs
 
@@ -42,10 +43,13 @@ pipx install phab-feedback
 phab-feedback --help
 ```
 
-Once a Phabricator host and Conduit token are available in `~/.arcrc`, inspect
-a revision:
+Once a Phabricator host and Conduit token are available in `~/.arcrc`, discover
+and inspect review work:
 
 ```bash
+phab-feedback list --role reviewing
+phab-feedback show D123
+phab-feedback threads D123
 phab-feedback timeline D123
 ```
 
@@ -85,7 +89,7 @@ Credential requirements vary by command:
 
 | Commands | Conduit token | Web session |
 | --- | --- | --- |
-| `timeline`, `comment` | Required | No |
+| `list`, `show`, `threads`, `timeline`, `comment` | Required | No |
 | `reply-inline`, `remove-comment`, `mark-done` | Required | Required |
 | `submit` | No | Required |
 | `mark-helpful`, `mark-unhelpful` (Mozilla only) | Required | Required |
@@ -98,14 +102,34 @@ config file.
 
 ## Commands and draft behavior
 
-Successful commands write JSON to stdout. `comment` and `reply-inline` read
-message text from `--message`, `--message-file PATH`, `--message-file -`, or
-redirected stdin. File or stdin input avoids shell-quoting mistakes.
+Successful commands write JSON to stdout. The read-only commands also support
+`--format text` for compact interactive output. `comment` and `reply-inline`
+read message text from `--message`, `--message-file PATH`, `--message-file -`,
+or redirected stdin. File or stdin input avoids shell-quoting mistakes.
 
-Start with the timeline and use its comment `id` values for later commands. Do
-not substitute transaction IDs or infer IDs from ordering.
+Discover revisions with `list`, use `show` for a summary, and use `threads` or
+`timeline` to obtain the exact comment `id` values required by later commands.
+Do not substitute transaction IDs or infer IDs from ordering.
 
 ```bash
+# List open revisions where the authenticated user is responsible.
+phab-feedback list
+
+# List revisions where the user is a reviewer, with a reusable page cursor.
+phab-feedback list --role reviewing --limit 25
+phab-feedback list --role reviewing --after CURSOR_FROM_PREVIOUS_RESULT
+
+# Filter by status and update time.
+phab-feedback list --role authored --status all \
+  --modified-after 2025-01-01T00:00:00Z
+
+# Summarize metadata, reviewer state, and feedback counts.
+phab-feedback show D123
+
+# Group roots and replies, retaining exact IDs for every comment.
+phab-feedback threads D123
+phab-feedback threads D123 --state all --current-diff-only
+
 # Read the complete chronological feedback timeline.
 phab-feedback timeline D123
 
@@ -125,6 +149,32 @@ phab-feedback submit D123
 phab-feedback remove-comment D123 789
 ```
 
+`list` supports `responsible`, `authored`, and `reviewing` roles. Its JSON
+response contains normalized revision records plus the server `cursor`; pass a
+non-null `cursor.after` value back through `--after` to continue. `show` reports
+unresolved and resolved root threads, replies, orphan replies, general comments,
+and comments on older diffs.
+
+The `open` and `closed` filters normally use Phorge's status datasource
+functions. If a server rejects those function tokens with HTTP 406, the CLI
+retries with canonical status keys; this fallback treats Accepted as open,
+matching the default Phorge policy.
+
+`threads` defaults to unresolved roots. Each entry contains a `root`, ordered
+`replies`, and a `resolved` flag. A reply whose parent is missing or cyclic is
+reported under `orphan_replies` rather than attached by guesswork. Every root,
+reply, and orphan retains its timeline `id`, PHID, diff, path, line, and direct
+parent fields.
+
+For interactive output:
+
+```bash
+phab-feedback list --role reviewing --format text
+phab-feedback show D123 --format text
+phab-feedback threads D123 --state all --format text
+phab-feedback timeline D123 --format text
+```
+
 `comment` and `remove-comment` take effect immediately. `reply-inline` and
 `mark-done` only create drafts. `submit` publishes pending draft actions and
 comments. The combined form is available only when immediate publication is
@@ -134,10 +184,11 @@ intentional:
 phab-feedback reply-inline D123 456 --message-file reply.txt --submit
 ```
 
-`timeline` and `comment` use standard Conduit APIs. Inline reply drafting,
-top-level comment removal, Done drafting, and draft submission use internal web
-endpoints present in upstream Phabricator and Phorge. Those endpoints are not a
-stable public API and may require compatibility updates after a server release.
+`list`, `show`, `threads`, `timeline`, and `comment` use standard Conduit APIs.
+Inline reply drafting, top-level comment removal, Done drafting, and draft
+submission use internal web endpoints present in upstream Phabricator and
+Phorge. Those endpoints are not a stable public API and may require
+compatibility updates after a server release.
 
 These commands depend on Mozilla's Review Helper extension and are not generic
 Phabricator or Phorge features:

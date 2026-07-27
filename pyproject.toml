@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phab-feedback"
-version = "0.1.1"
+version = "0.2.0"
 description = "CLI for Phabricator and Phorge review feedback workflows"
 readme = "README.md"
 requires-python = ">=3.10"

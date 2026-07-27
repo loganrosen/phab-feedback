@@ -48,7 +48,8 @@ class UrllibTransport:
                 )
         except HTTPError as error:
             raise NetworkError(
-                f"HTTP {error.code} from {_safe_location(url)}"
+                f"HTTP {error.code} from {_safe_location(url)}",
+                status=error.code,
             ) from error
         except URLError as error:
             reason = getattr(error, "reason", "connection failed")

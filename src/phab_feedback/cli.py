@@ -5,17 +5,22 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence, TextIO
 
 from .api import ConduitClient, WebClient
 from .config import ConfigResolver, CredentialResolver
 from .errors import PhabFeedbackError, ValidationError
+from .formatting import render_text
 from .service import FeedbackService
 from .transport import Transport, UrllibTransport
 
 
 CONDUIT_COMMANDS = {
+    "list",
+    "show",
+    "threads",
     "timeline",
     "comment",
     "reply-inline",
@@ -58,10 +63,67 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    revisions = subparsers.add_parser(
+        "list", help="List revisions for the authenticated user"
+    )
+    revisions.add_argument(
+        "--role",
+        choices=("responsible", "authored", "reviewing"),
+        default="responsible",
+        help="Relationship to listed revisions (default: responsible)",
+    )
+    revisions.add_argument(
+        "--status",
+        choices=("open", "closed", "all"),
+        default="open",
+        help="Revision status filter (default: open)",
+    )
+    revisions.add_argument(
+        "--modified-after",
+        type=_parse_time,
+        metavar="TIME",
+        help="Only revisions updated after an ISO 8601 time or Unix timestamp",
+    )
+    revisions.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=25,
+        help="Maximum revisions to return (default: 25)",
+    )
+    revisions.add_argument(
+        "--after",
+        help="Continue from a cursor returned by an earlier list command",
+    )
+    _add_format_option(revisions)
+
+    show = subparsers.add_parser(
+        "show", help="Show revision metadata and feedback counts"
+    )
+    _add_revision_argument(show)
+    _add_format_option(show)
+
+    threads = subparsers.add_parser(
+        "threads", help="Show inline feedback grouped into threads"
+    )
+    _add_revision_argument(threads)
+    threads.add_argument(
+        "--state",
+        choices=("unresolved", "resolved", "all"),
+        default="unresolved",
+        help="Thread state filter (default: unresolved)",
+    )
+    threads.add_argument(
+        "--current-diff-only",
+        action="store_true",
+        help="Only include threads rooted on the current diff",
+    )
+    _add_format_option(threads)
+
     timeline = subparsers.add_parser(
         "timeline", help="Show structured general and inline feedback"
     )
     _add_revision_argument(timeline)
+    _add_format_option(timeline)
 
     comment = subparsers.add_parser(
         "comment", help="Post an immediate top-level revision comment"
@@ -129,6 +191,41 @@ def _add_message_options(parser: argparse.ArgumentParser) -> None:
         type=Path,
         help="Read message from a file, or use - for stdin",
     )
+
+
+def _add_format_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--format",
+        choices=("json", "text"),
+        default="json",
+        help="Output format (default: json)",
+    )
+
+
+def _positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer") from error
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be positive")
+    return number
+
+
+def _parse_time(value: str) -> int:
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "must be an ISO 8601 time or Unix timestamp"
+        ) from error
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp())
 
 
 def _add_revision_argument(parser: argparse.ArgumentParser) -> None:
@@ -218,7 +315,23 @@ def run(
         )
         service = FeedbackService(conduit=conduit, web=web)
 
-        if command == "timeline":
+        if command == "list":
+            result = service.list_revisions(
+                role=args.role,
+                status=args.status,
+                modified_after=args.modified_after,
+                limit=args.limit,
+                after=args.after,
+            )
+        elif command == "show":
+            result = service.show(args.revision)
+        elif command == "threads":
+            result = service.threads(
+                args.revision,
+                state=args.state,
+                current_diff_only=args.current_diff_only,
+            )
+        elif command == "timeline":
             result = service.timeline(args.revision)
         elif command == "comment":
             result = service.post_comment(
@@ -251,8 +364,12 @@ def run(
     except PhabFeedbackError as error:
         print(f"error: {error}", file=stderr)
         return 1
-    json.dump(result, stdout, indent=2, sort_keys=True)
-    stdout.write("\n")
+    if getattr(args, "format", "json") == "text":
+        stdout.write(render_text(command, result))
+        stdout.write("\n")
+    else:
+        json.dump(result, stdout, indent=2, sort_keys=True)
+        stdout.write("\n")
     return 0
 
 

@@ -1,6 +1,6 @@
 ---
 name: phab-feedback
-description: Inspect and act on Phabricator or Phorge Differential feedback with the phab-feedback CLI. Use for chronological review timelines, exact general or inline comment IDs, inline-thread reply drafts, accidental top-level comment removal, Done drafts, explicit draft submission, and Mozilla Review Helper ratings or AI review requests. Trigger when an agent needs deterministic review metadata, must classify feedback across diff versions, or is ready to perform a user-approved feedback mutation.
+description: Discover, inspect, and act on Phabricator or Phorge Differential feedback with the phab-feedback CLI. Use for reviewer or author revision queues, revision summaries, unresolved inline threads, chronological timelines, exact general or inline comment IDs, inline-thread reply drafts, accidental top-level comment removal, Done drafts, explicit draft submission, and Mozilla Review Helper ratings or AI review requests. Trigger when an agent needs deterministic review metadata, must classify feedback across diff versions, needs to triage review work, or is ready to perform a user-approved feedback mutation.
 ---
 
 # Phabricator feedback
@@ -29,9 +29,18 @@ Run every example below through `"${PHAB_FEEDBACK[@]}"`.
 
 ## Inspect before acting
 
-Run `"${PHAB_FEEDBACK[@]}" timeline D123` before classifying feedback or
-choosing a mutation. Take comment IDs from the timeline's `id` fields. Never
-infer them from ordering, URLs, transaction IDs, or diff IDs.
+Use `list` to discover work and `show` to assess a revision:
+
+```bash
+"${PHAB_FEEDBACK[@]}" list --role reviewing
+"${PHAB_FEEDBACK[@]}" show D123
+```
+
+Run `threads D123 --state all` for grouped conversations or `timeline D123` for
+the complete chronology before classifying feedback or choosing a mutation.
+Take comment IDs only from their `id` fields. Never infer them from ordering,
+URLs, transaction IDs, or diff IDs. Treat `orphan_replies` as ungrouped; do not
+guess their parent.
 
 ## Require approval per mutation
 

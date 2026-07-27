@@ -21,7 +21,7 @@ class RecordedRequest:
 
 @dataclass
 class FakeTransport:
-    responses: list[HttpResponse]
+    responses: list[HttpResponse | Exception]
     requests: list[RecordedRequest] = field(default_factory=list)
 
     def request(
@@ -35,7 +35,10 @@ class FakeTransport:
         self.requests.append(RecordedRequest(method, url, headers or {}, data))
         if not self.responses:
             raise AssertionError(f"Unexpected request: {method} {url}")
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def response(payload: Any, status: int = 200) -> HttpResponse:
@@ -73,4 +76,40 @@ def transaction(
                 "content": {"raw": f"comment {comment}"},
             }
         ],
+    }
+
+
+def revision(
+    revision_id: int,
+    *,
+    diff_phid: str = "PHID-DIFF-current",
+    author_phid: str = "PHID-USER-author",
+    repository_phid: str = "PHID-REPO-main",
+) -> dict[str, Any]:
+    return {
+        "id": revision_id,
+        "phid": f"PHID-DREV-{revision_id}",
+        "fields": {
+            "title": f"Revision {revision_id}",
+            "uri": f"https://phab.example/D{revision_id}",
+            "authorPHID": author_phid,
+            "repositoryPHID": repository_phid,
+            "diffPHID": diff_phid,
+            "status": {"value": "needs-review", "name": "Needs Review"},
+            "isDraft": False,
+            "dateCreated": 100,
+            "dateModified": 200,
+        },
+        "attachments": {
+            "reviewers": {
+                "reviewers": [
+                    {
+                        "reviewerPHID": "PHID-USER-reviewer",
+                        "actorPHID": "PHID-USER-reviewer",
+                        "status": "accepted",
+                        "isBlocking": True,
+                    }
+                ]
+            }
+        },
     }
