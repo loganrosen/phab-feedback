@@ -1,47 +1,69 @@
 ---
 name: phab-feedback
-description: Inspect Phabricator or Phorge feedback and perform approved review actions with the phab-feedback CLI, including feedback chronology, inline-thread replies, accidental top-level comment removal, Done drafts, draft submission, and Mozilla Review Helper ratings or AI review requests. Use when an agent needs deterministic review metadata or a specific public feedback mutation after the user has selected and approved it.
+description: Inspect and act on Phabricator or Phorge Differential feedback with the phab-feedback CLI. Use for chronological review timelines, exact general or inline comment IDs, inline-thread reply drafts, accidental top-level comment removal, Done drafts, explicit draft submission, and Mozilla Review Helper ratings or AI review requests. Trigger when an agent needs deterministic review metadata, must classify feedback across diff versions, or is ready to perform a user-approved feedback mutation.
 ---
 
 # Phabricator feedback
 
-Use the installed `phab-feedback` command for deterministic operations. Do not
-reimplement its HTTP requests or expose tokens and cookies in commands or output.
+Use the CLI for all deterministic operations. Do not reimplement its HTTP
+requests or expose tokens and cookies in commands or output.
 
-## Inspect feedback
+## Select a runner
 
-Run `phab-feedback timeline D123` before classifying comments across multiple
-diff versions or when IDs, Done states, reply parents, paths, or chronology
-matter. Treat this command as read-only.
+Use an installed `phab-feedback` first. Otherwise use `uvx phab-feedback`
+without installing it persistently. Stop with a clear installation error if
+neither runner exists; do not install tools on the user's behalf.
 
-## Respect the mutation boundary
+```bash
+if command -v phab-feedback >/dev/null 2>&1; then
+  PHAB_FEEDBACK=(phab-feedback)
+elif command -v uvx >/dev/null 2>&1; then
+  PHAB_FEEDBACK=(uvx phab-feedback)
+else
+  printf '%s\n' 'phab-feedback requires phab-feedback or uvx on PATH' >&2
+  exit 1
+fi
+```
 
-Obtain explicit approval for the exact revision, comment IDs, message text, and
-action immediately before every mutation. Prefer `--message-file` or stdin over
-shell-quoted message text.
+Run every example below through `"${PHAB_FEEDBACK[@]}"`.
 
-- Post a top-level comment with `phab-feedback comment`.
-- Draft a true inline-thread reply with `phab-feedback reply-inline`.
-- Remove only accidental top-level comments with
-  `phab-feedback remove-comment`; the CLI rejects inline comments and verifies
-  removal.
-- Draft Done changes with `phab-feedback mark-done`.
-- Publish pending replies and Done changes with `phab-feedback submit`.
+## Inspect before acting
 
-Inline replies and Done changes remain drafts until submission. Use
-`reply-inline --submit` only when the user explicitly approved immediate
-publication. Never combine reply, Done, rating, or submission actions
-implicitly.
+Run `"${PHAB_FEEDBACK[@]}" timeline D123` before classifying feedback or
+choosing a mutation. Take comment IDs from the timeline's `id` fields. Never
+infer them from ordering, URLs, transaction IDs, or diff IDs.
 
-## Handle Mozilla Review Helper separately
+## Require approval per mutation
 
-Treat `mark-helpful`, `mark-unhelpful`, and `request-ai-review` as Mozilla-only
-extension commands. Ratings take effect immediately. Request AI review only
-after relevant changes are published and only when the workflow selected that
-reviewer.
+Immediately before each mutation, obtain approval for the exact revision,
+comment IDs, message text, action, and whether it drafts or publishes. Treat
+draft creation and submission as separate mutations requiring separate
+approval. Prefer message files or stdin:
 
-## Verify thread actions
+```bash
+"${PHAB_FEEDBACK[@]}" comment D123 --message-file reply.txt
+"${PHAB_FEEDBACK[@]}" reply-inline D123 456 --message-file - < reply.txt
+```
 
-After publishing an inline reply, run `timeline` and confirm its
-`reply_to_comment_id` matches the intended parent. Do not mark that parent Done
-unless the user separately approved it.
+- Treat `comment` as an immediate top-level post.
+- Treat `remove-comment` as an immediate removal after type validation.
+- Treat `reply-inline` and `mark-done` as draft creation.
+- Run `submit D123` only after separate approval to publish all pending drafts.
+- Use `reply-inline ... --submit` only when combined creation and publication
+  were explicitly approved.
+- Use `remove-comment` only for an accidental top-level comment.
+
+Never combine reply, Done, removal, or submission actions implicitly.
+
+## Isolate Mozilla-only actions
+
+Treat `mark-helpful`, `mark-unhelpful`, and `request-ai-review` as Mozilla
+Review Helper commands. Ratings and AI review requests take effect immediately.
+Request AI review only after the relevant changes are published and the user
+selected that reviewer.
+
+## Verify published replies
+
+After submission, run `timeline` and confirm each reply's
+`reply_to_comment_id` matches the approved parent. Do not mark the parent Done
+without separate approval.

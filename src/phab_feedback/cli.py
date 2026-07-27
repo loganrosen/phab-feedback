@@ -61,19 +61,19 @@ def build_parser() -> argparse.ArgumentParser:
     timeline = subparsers.add_parser(
         "timeline", help="Show structured general and inline feedback"
     )
-    timeline.add_argument("revision")
+    _add_revision_argument(timeline)
 
     comment = subparsers.add_parser(
         "comment", help="Post an immediate top-level revision comment"
     )
-    comment.add_argument("revision")
+    _add_revision_argument(comment)
     _add_message_options(comment)
 
     reply = subparsers.add_parser(
         "reply-inline", help="Draft a true reply to an inline comment"
     )
-    reply.add_argument("revision")
-    reply.add_argument("comment_id")
+    _add_revision_argument(reply)
+    _add_comment_argument(reply)
     _add_message_options(reply)
     reply.add_argument(
         "--submit",
@@ -84,39 +84,39 @@ def build_parser() -> argparse.ArgumentParser:
     remove = subparsers.add_parser(
         "remove-comment", help="Remove an accidental top-level comment"
     )
-    remove.add_argument("revision")
-    remove.add_argument("comment_id")
+    _add_revision_argument(remove)
+    _add_comment_argument(remove)
 
     done = subparsers.add_parser(
         "mark-done", help="Mark inline comments Done as drafts"
     )
-    done.add_argument("revision")
-    done.add_argument("comment_ids", nargs="+")
+    _add_revision_argument(done)
+    _add_comment_argument(done, multiple=True)
 
     submit = subparsers.add_parser(
         "submit", help="Submit pending draft actions and comments"
     )
-    submit.add_argument("revision")
+    _add_revision_argument(submit)
 
     helpful = subparsers.add_parser(
         "mark-helpful",
         help="Rate Review Helper feedback helpful (Mozilla only)",
     )
-    helpful.add_argument("revision")
-    helpful.add_argument("comment_ids", nargs="+")
+    _add_revision_argument(helpful)
+    _add_comment_argument(helpful, multiple=True)
 
     unhelpful = subparsers.add_parser(
         "mark-unhelpful",
         help="Rate Review Helper feedback unhelpful (Mozilla only)",
     )
-    unhelpful.add_argument("revision")
-    unhelpful.add_argument("comment_ids", nargs="+")
+    _add_revision_argument(unhelpful)
+    _add_comment_argument(unhelpful, multiple=True)
 
     request = subparsers.add_parser(
         "request-ai-review",
         help="Request a Review Helper AI review (Mozilla only)",
     )
-    request.add_argument("revision")
+    _add_revision_argument(request)
 
     return parser
 
@@ -128,6 +128,25 @@ def _add_message_options(parser: argparse.ArgumentParser) -> None:
         "--message-file",
         type=Path,
         help="Read message from a file, or use - for stdin",
+    )
+
+
+def _add_revision_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "revision",
+        metavar="REVISION",
+        help="Revision ID, for example D123",
+    )
+
+
+def _add_comment_argument(
+    parser: argparse.ArgumentParser, *, multiple: bool = False
+) -> None:
+    parser.add_argument(
+        "comment_ids" if multiple else "comment_id",
+        nargs="+" if multiple else None,
+        metavar="COMMENT_ID",
+        help="Comment ID from timeline output",
     )
 
 
