@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +7,7 @@ from pathlib import Path
 from phab_feedback.config import (
     ConfigResolver,
     discover_firefox_cookie,
+    find_firefox_profile,
     normalize_host,
 )
 from phab_feedback.errors import ConfigurationError
@@ -107,7 +109,6 @@ class ConfigTests(unittest.TestCase):
     def test_firefox_cookie_discovery_uses_selected_host(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             profile = Path(directory)
-            import sqlite3
 
             with sqlite3.connect(profile / "cookies.sqlite") as connection:
                 connection.execute(
@@ -130,6 +131,113 @@ class ConfigTests(unittest.TestCase):
                     home=profile,
                 ),
             )
+
+    def test_firefox_install_default_precedes_legacy_profile_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            root = home / "Library" / "Application Support" / "Firefox"
+            legacy = root / "Profiles" / "legacy.default"
+            current = root / "Profiles" / "current.default-release"
+            legacy.mkdir(parents=True)
+            current.mkdir()
+            (root / "profiles.ini").write_text(
+                """
+[Profile0]
+Name=default-release
+IsRelative=1
+Path=Profiles/current.default-release
+
+[Profile1]
+Name=default
+IsRelative=1
+Path=Profiles/legacy.default
+Default=1
+
+[InstallABC]
+Default=Profiles/current.default-release
+Locked=1
+""".strip(),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(current, find_firefox_profile(home))
+
+    def test_firefox_cookie_discovery_checks_multiple_install_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            root = home / ".mozilla" / "firefox"
+            first = root / "first.default-release"
+            second = root / "second.default-release"
+            first.mkdir(parents=True)
+            second.mkdir()
+            (root / "profiles.ini").write_text(
+                """
+[InstallAAA]
+Default=first.default-release
+
+[InstallBBB]
+Default=second.default-release
+""".strip(),
+                encoding="utf-8",
+            )
+            self._write_cookie_database(first, [("other", "value", ".phab.example")])
+            self._write_cookie_database(
+                second,
+                [
+                    ("phsid", "right", ".phab.example"),
+                    ("phusr", "logan", ".phab.example"),
+                ],
+            )
+
+            self.assertEqual(
+                "phsid=right; phusr=logan",
+                discover_firefox_cookie(
+                    hostname="phab.example",
+                    cookie_name="phsid",
+                    profile=None,
+                    home=home,
+                ),
+            )
+
+    def test_explicit_firefox_profile_does_not_fall_back(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            root = home / "AppData" / "Roaming" / "Mozilla" / "Firefox"
+            explicit = root / "Profiles" / "explicit.default"
+            other = root / "Profiles" / "other.default-release"
+            explicit.mkdir(parents=True)
+            other.mkdir()
+            (root / "profiles.ini").write_text(
+                """
+[InstallABC]
+Default=Profiles/other.default-release
+""".strip(),
+                encoding="utf-8",
+            )
+            self._write_cookie_database(
+                explicit, [("other", "value", ".phab.example")]
+            )
+            self._write_cookie_database(
+                other, [("phsid", "not-selected", ".phab.example")]
+            )
+
+            with self.assertRaisesRegex(ConfigurationError, "No phsid"):
+                discover_firefox_cookie(
+                    hostname="phab.example",
+                    cookie_name="phsid",
+                    profile=explicit,
+                    home=home,
+                )
+
+    @staticmethod
+    def _write_cookie_database(
+        profile: Path, cookies: list[tuple[str, str, str]]
+    ) -> None:
+        with sqlite3.connect(profile / "cookies.sqlite") as connection:
+            connection.execute(
+                "CREATE TABLE moz_cookies (name TEXT, value TEXT, host TEXT)"
+            )
+            connection.executemany("INSERT INTO moz_cookies VALUES (?, ?, ?)", cookies)
 
     def test_single_arcrc_host_is_inferred(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

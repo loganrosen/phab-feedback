@@ -54,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--firefox-cookies",
         action="store_true",
-        help="Read the web session from a local Firefox profile",
+        help="Find a web session across local Firefox profiles",
     )
     parser.add_argument(
         "--firefox-profile",
