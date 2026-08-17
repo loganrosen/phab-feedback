@@ -222,12 +222,49 @@ def discover_firefox_cookie(
     profile: Path | None,
     home: Path,
 ) -> str:
-    selected = profile or find_firefox_profile(home)
-    if selected is None:
+    if profile is not None:
+        database = profile / "cookies.sqlite"
+        if not database.exists():
+            raise ConfigurationError(f"Firefox cookie database not found: {database}")
+        cookie = _read_firefox_cookie(database, hostname, cookie_name)
+        if cookie is None:
+            raise ConfigurationError(
+                f"No {cookie_name} Firefox cookie found for {hostname}"
+            )
+        return cookie
+
+    profiles = firefox_profile_candidates(home)
+    if not profiles:
         raise ConfigurationError("No Firefox profile found")
-    database = selected / "cookies.sqlite"
-    if not database.exists():
-        raise ConfigurationError(f"Firefox cookie database not found: {database}")
+
+    readable_database = False
+    read_error = False
+    for candidate in profiles:
+        database = candidate / "cookies.sqlite"
+        if not database.exists():
+            continue
+        try:
+            cookie = _read_firefox_cookie(database, hostname, cookie_name)
+        except ConfigurationError:
+            read_error = True
+            continue
+        readable_database = True
+        if cookie is not None:
+            return cookie
+
+    if readable_database:
+        raise ConfigurationError(
+            f"No {cookie_name} Firefox cookie found for {hostname} "
+            "in discovered profiles"
+        )
+    if read_error:
+        raise ConfigurationError("Could not read any Firefox cookie database")
+    raise ConfigurationError("No Firefox cookie database found in discovered profiles")
+
+
+def _read_firefox_cookie(
+    database: Path, hostname: str, cookie_name: str
+) -> str | None:
 
     temporary = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
     temporary.close()
@@ -250,9 +287,7 @@ def discover_firefox_cookie(
     values = {str(name): str(value) for name, value in rows}
     session = values.get(cookie_name)
     if not session:
-        raise ConfigurationError(
-            f"No {cookie_name} Firefox cookie found for {hostname}"
-        )
+        return None
     pairs = [f"{cookie_name}={session}"]
     if values.get("phusr"):
         pairs.append(f"phusr={values['phusr']}")
@@ -260,36 +295,66 @@ def discover_firefox_cookie(
 
 
 def find_firefox_profile(home: Path) -> Path | None:
+    candidates = firefox_profile_candidates(home)
+    return candidates[0] if candidates else None
+
+
+def firefox_profile_candidates(home: Path) -> list[Path]:
     roots = [
         home / "Library" / "Application Support" / "Firefox",
         home / ".mozilla" / "firefox",
+        home / "AppData" / "Roaming" / "Mozilla" / "Firefox",
     ]
+    result: list[Path] = []
+    seen: set[str] = set()
+
+    def add(candidate: Path) -> None:
+        key = os.path.normcase(os.path.abspath(candidate))
+        if candidate.exists() and key not in seen:
+            seen.add(key)
+            result.append(candidate)
+
     for root in roots:
         profiles_ini = root / "profiles.ini"
         if profiles_ini.exists():
-            parser = configparser.ConfigParser()
+            parser = configparser.ConfigParser(interpolation=None)
             parser.read(profiles_ini, encoding="utf-8")
-            candidates: list[tuple[bool, Path]] = []
-            for section in parser.sections():
-                if not section.startswith("Profile"):
-                    continue
+
+            for section in sorted(
+                section for section in parser.sections() if section.startswith("Install")
+            ):
+                raw_path = parser.get(section, "Default", fallback="")
+                if raw_path:
+                    candidate = Path(raw_path)
+                    add(candidate if candidate.is_absolute() else root / candidate)
+
+            profile_candidates: list[tuple[bool, str, Path]] = []
+            for section in sorted(
+                section for section in parser.sections() if section.startswith("Profile")
+            ):
                 raw_path = parser.get(section, "Path", fallback="")
                 if not raw_path:
                     continue
                 candidate = Path(raw_path)
                 if parser.getboolean(section, "IsRelative", fallback=True):
                     candidate = root / candidate
-                candidates.append(
-                    (parser.getboolean(section, "Default", fallback=False), candidate)
+                profile_candidates.append(
+                    (
+                        parser.getboolean(section, "Default", fallback=False),
+                        section,
+                        candidate,
+                    )
                 )
-            for _, candidate in sorted(candidates, reverse=True):
-                if candidate.exists():
-                    return candidate
+            for _, _, candidate in sorted(
+                profile_candidates, key=lambda item: (not item[0], item[1])
+            ):
+                add(candidate)
+
         profiles = root / "Profiles"
         if profiles.exists():
             matches = sorted(profiles.glob("*.default-release"))
             matches.extend(sorted(profiles.glob("*.default")))
             matches.extend(sorted(path for path in profiles.iterdir() if path.is_dir()))
-            if matches:
-                return matches[0]
-    return None
+            for candidate in matches:
+                add(candidate)
+    return result
