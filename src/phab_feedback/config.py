@@ -265,24 +265,24 @@ def discover_firefox_cookie(
 def _read_firefox_cookie(
     database: Path, hostname: str, cookie_name: str
 ) -> str | None:
-
-    temporary = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
-    temporary.close()
-    copy = Path(temporary.name)
     try:
-        shutil.copy2(database, copy)
-        with sqlite3.connect(copy) as connection:
-            rows = connection.execute(
-                """
-                SELECT name, value FROM moz_cookies
-                WHERE name IN (?, 'phusr') AND (host = ? OR host = ?)
-                """,
-                (cookie_name, hostname, f".{hostname}"),
-            ).fetchall()
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory) / database.name
+            shutil.copy2(database, copy)
+            wal = database.with_name(f"{database.name}-wal")
+            # Firefox may keep newly written session cookies only in the live WAL.
+            if wal.exists():
+                shutil.copy2(wal, copy.with_name(f"{copy.name}-wal"))
+            with sqlite3.connect(copy) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT name, value FROM moz_cookies
+                    WHERE name IN (?, 'phusr') AND (host = ? OR host = ?)
+                    """,
+                    (cookie_name, hostname, f".{hostname}"),
+                ).fetchall()
     except (OSError, sqlite3.Error) as error:
         raise ConfigurationError("Could not read Firefox cookie database") from error
-    finally:
-        copy.unlink(missing_ok=True)
 
     values = {str(name): str(value) for name, value in rows}
     session = values.get(cookie_name)

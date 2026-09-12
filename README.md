@@ -80,8 +80,9 @@ Browser-only actions also need a logged-in web session. Set
 a complete `Cookie` header. To read it from a local Firefox profile instead,
 put `--firefox-cookies` before the command. Auto-discovery checks modern Firefox
 install defaults before legacy profile defaults and searches the discovered
-profiles for a matching host cookie. `--firefox-profile PATH` selects only that
-profile and implies cookie discovery:
+profiles for a matching host cookie, including cookies still in Firefox's live
+write-ahead log. Firefox can remain open during discovery.
+`--firefox-profile PATH` selects only that profile and implies cookie discovery:
 
 ```bash
 phab-feedback --firefox-cookies submit D123
