@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from phab_feedback.config import (
     ConfigResolver,
@@ -131,6 +132,59 @@ class ConfigTests(unittest.TestCase):
                     home=profile,
                 ),
             )
+
+    def test_firefox_cookie_discovery_reads_uncheckpointed_wal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            with sqlite3.connect(profile / "cookies.sqlite") as connection:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("PRAGMA wal_autocheckpoint=0")
+                connection.execute(
+                    "CREATE TABLE moz_cookies (name TEXT, value TEXT, host TEXT)"
+                )
+                connection.commit()
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                connection.executemany(
+                    "INSERT INTO moz_cookies VALUES (?, ?, ?)",
+                    [
+                        ("phsid", "right", ".phab.example"),
+                        ("phusr", "logan", ".phab.example"),
+                    ],
+                )
+                connection.commit()
+
+                self.assertEqual(
+                    "phsid=right; phusr=logan",
+                    discover_firefox_cookie(
+                        hostname="phab.example",
+                        cookie_name="phsid",
+                        profile=profile,
+                        home=profile,
+                    ),
+                )
+
+    def test_firefox_cookie_snapshot_retries_when_database_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            self._write_cookie_database(
+                profile, [("phsid", "right", ".phab.example")]
+            )
+
+            with mock.patch(
+                "phab_feedback.config._files_match",
+                side_effect=[False, True, True],
+            ) as files_match:
+                self.assertEqual(
+                    "phsid=right",
+                    discover_firefox_cookie(
+                        hostname="phab.example",
+                        cookie_name="phsid",
+                        profile=profile,
+                        home=profile,
+                    ),
+                )
+
+            self.assertEqual(3, files_match.call_count)
 
     def test_firefox_install_default_precedes_legacy_profile_default(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

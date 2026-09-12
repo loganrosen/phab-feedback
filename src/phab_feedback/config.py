@@ -8,6 +8,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Protocol
@@ -265,24 +266,19 @@ def discover_firefox_cookie(
 def _read_firefox_cookie(
     database: Path, hostname: str, cookie_name: str
 ) -> str | None:
-
-    temporary = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
-    temporary.close()
-    copy = Path(temporary.name)
     try:
-        shutil.copy2(database, copy)
-        with sqlite3.connect(copy) as connection:
-            rows = connection.execute(
-                """
-                SELECT name, value FROM moz_cookies
-                WHERE name IN (?, 'phusr') AND (host = ? OR host = ?)
-                """,
-                (cookie_name, hostname, f".{hostname}"),
-            ).fetchall()
+        with tempfile.TemporaryDirectory() as directory:
+            copy = _snapshot_firefox_database(database, Path(directory))
+            with sqlite3.connect(copy) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT name, value FROM moz_cookies
+                    WHERE name IN (?, 'phusr') AND (host = ? OR host = ?)
+                    """,
+                    (cookie_name, hostname, f".{hostname}"),
+                ).fetchall()
     except (OSError, sqlite3.Error) as error:
         raise ConfigurationError("Could not read Firefox cookie database") from error
-    finally:
-        copy.unlink(missing_ok=True)
 
     values = {str(name): str(value) for name, value in rows}
     session = values.get(cookie_name)
@@ -292,6 +288,52 @@ def _read_firefox_cookie(
     if values.get("phusr"):
         pairs.append(f"phusr={values['phusr']}")
     return "; ".join(pairs)
+
+
+def _snapshot_firefox_database(database: Path, directory: Path) -> Path:
+    copy = directory / database.name
+    wal = database.with_name(f"{database.name}-wal")
+    wal_copy = copy.with_name(f"{copy.name}-wal")
+
+    for attempt in range(3):
+        copy.unlink(missing_ok=True)
+        wal_copy.unlink(missing_ok=True)
+        try:
+            shutil.copyfile(database, copy)
+            has_wal = wal.exists()
+            if has_wal:
+                # Firefox may keep newly written session cookies only in the WAL.
+                shutil.copyfile(wal, wal_copy)
+            if (
+                _files_match(database, copy)
+                and wal.exists() == has_wal
+                and (not has_wal or _files_match(wal, wal_copy))
+                and _files_match(database, copy)
+            ):
+                return copy
+        except FileNotFoundError:
+            pass
+        time.sleep(0.01 * (attempt + 1))
+
+    raise ConfigurationError(
+        "Could not take a consistent snapshot of Firefox cookie database"
+    )
+
+
+def _files_match(first: Path, second: Path) -> bool:
+    try:
+        if first.stat().st_size != second.stat().st_size:
+            return False
+        with first.open("rb") as first_file, second.open("rb") as second_file:
+            while True:
+                first_chunk = first_file.read(1024 * 1024)
+                second_chunk = second_file.read(1024 * 1024)
+                if first_chunk != second_chunk:
+                    return False
+                if not first_chunk:
+                    return True
+    except OSError:
+        return False
 
 
 def find_firefox_profile(home: Path) -> Path | None:
