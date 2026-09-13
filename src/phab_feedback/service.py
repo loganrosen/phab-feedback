@@ -491,20 +491,25 @@ class FeedbackService:
         path = f"/differential/comment/inline/edit/{revision_id}/"
         results = []
         for identifier in ids:
-            response = self._web().post(
-                path,
-                {
-                    "op": "done",
-                    "id": str(identifier),
-                    "__wflow__": "true",
-                    "__ajax__": "true",
-                },
-            )
-            payload = response.get("payload") or {}
+            data = {
+                "op": "done",
+                "id": str(identifier),
+                "__wflow__": "true",
+                "__ajax__": "true",
+            }
+            payload = (self._web().post(path, data).get("payload") or {})
+            if not payload.get("isChecked"):
+                # The endpoint toggles four published/draft states. An
+                # unchecked response may mean we just cleared a hidden draft.
+                payload = (self._web().post(path, data).get("payload") or {})
+            if not payload.get("isChecked"):
+                raise APIError(
+                    f"Server did not mark inline comment {identifier} Done"
+                )
             results.append(
                 {
                     "comment_id": identifier,
-                    "is_done": bool(payload.get("isChecked")),
+                    "is_done": True,
                     "draft": bool(payload.get("draftState")),
                 }
             )

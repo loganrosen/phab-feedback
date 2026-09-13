@@ -524,6 +524,70 @@ class ServiceTests(unittest.TestCase):
             [transport.requests[6].url.removeprefix(self.host)],
         )
 
+    def test_mark_done_recovers_checked_draft_on_root_with_reply(self) -> None:
+        root = transaction(
+            1,
+            "inline",
+            20,
+            fields={"isDone": False},
+        )
+        reply = transaction(
+            2,
+            "inline",
+            21,
+            fields={
+                "isDone": True,
+                "replyToCommentPHID": "PHID-CMT-20",
+            },
+        )
+        service, transport = self.service(
+            [
+                conduit_result(
+                    {"data": [reply, root], "cursor": {"after": None}}
+                ),
+                CSRF_RESPONSE,
+                response(
+                    {"payload": {"isChecked": False, "draftState": False}}
+                ),
+                response(
+                    {"payload": {"isChecked": True, "draftState": True}}
+                ),
+            ]
+        )
+
+        result = service.mark_done("D1", [20])
+
+        self.assertEqual(
+            {"comment_id": 20, "is_done": True, "draft": True},
+            result["comments"][0],
+        )
+        done_requests = transport.requests[2:]
+        self.assertEqual(2, len(done_requests))
+        self.assertEqual(
+            [["20"], ["20"]],
+            [request.form()["id"] for request in done_requests],
+        )
+
+    def test_mark_done_fails_if_server_never_checks_comment(self) -> None:
+        inline = transaction(1, "inline", 20)
+        service, _ = self.service(
+            [
+                conduit_result(
+                    {"data": [inline], "cursor": {"after": None}}
+                ),
+                CSRF_RESPONSE,
+                response(
+                    {"payload": {"isChecked": False, "draftState": False}}
+                ),
+                response(
+                    {"payload": {"isChecked": False, "draftState": False}}
+                ),
+            ]
+        )
+
+        with self.assertRaisesRegex(APIError, "did not mark.*20.*Done"):
+            service.mark_done("D1", [20])
+
     def test_api_errors_do_not_include_token(self) -> None:
         transport = FakeTransport(
             [
