@@ -78,7 +78,7 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Create checksums
-        run: (cd dist && sha256sum * > checksums.txt)
+        run: (cd dist && sha256sum -- * > checksums.txt)
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}

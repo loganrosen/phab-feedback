@@ -1,11 +1,13 @@
 package phabfeedback
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,7 +32,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	root := newRootCommand(stdin, stdout, stderr)
 	root.SetArgs(args)
 	if err := root.Execute(); err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
 	return 0
@@ -76,7 +78,7 @@ func newListCommand(app *appOptions) *cobra.Command {
 		Use:   "list",
 		Short: "List revisions for the authenticated user",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(command *cobra.Command, _ []string) error {
 			if limit < 1 {
 				return fmt.Errorf("revision limit must be positive")
 			}
@@ -88,7 +90,7 @@ func newListCommand(app *appOptions) *cobra.Command {
 				}
 				modified = &value
 			}
-			return app.execute("list", true, false, format, func(service *feedbackService) (map[string]any, error) {
+			return app.execute(command.Context(), "list", true, false, format, func(service *feedbackService) (map[string]any, error) {
 				return service.listRevisions(role, status, modified, limit, after)
 			})
 		},
@@ -100,10 +102,10 @@ func newListCommand(app *appOptions) *cobra.Command {
 	command.Flags().StringVar(&after, "after", "", "Continue from a cursor returned by an earlier list command")
 	addFormatFlag(command, &format)
 	command.PreRunE = func(_ *cobra.Command, _ []string) error {
-		if !oneOf(role, "responsible", "authored", "reviewing") {
+		if !slices.Contains([]string{"responsible", "authored", "reviewing"}, role) {
 			return fmt.Errorf("invalid --role value %q", role)
 		}
-		if !oneOf(status, "open", "closed", "all") {
+		if !slices.Contains([]string{"open", "closed", "all"}, status) {
 			return fmt.Errorf("invalid --status value %q", status)
 		}
 		return validateFormat(format)
@@ -122,8 +124,8 @@ func newThreadsCommand(app *appOptions) *cobra.Command {
 		Use:   "threads REVISION",
 		Short: "Show inline feedback grouped into threads",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			return app.execute("threads", true, false, format, func(service *feedbackService) (map[string]any, error) {
+		RunE: func(command *cobra.Command, args []string) error {
+			return app.execute(command.Context(), "threads", true, false, format, func(service *feedbackService) (map[string]any, error) {
 				return service.threads(args[0], state, currentDiffOnly)
 			})
 		},
@@ -132,7 +134,7 @@ func newThreadsCommand(app *appOptions) *cobra.Command {
 	command.Flags().BoolVar(&currentDiffOnly, "current-diff-only", false, "Only include threads rooted on the current diff")
 	addFormatFlag(command, &format)
 	command.PreRunE = func(_ *cobra.Command, _ []string) error {
-		if !oneOf(state, "unresolved", "resolved", "all") {
+		if !slices.Contains([]string{"unresolved", "resolved", "all"}, state) {
 			return fmt.Errorf("invalid --state value %q", state)
 		}
 		return validateFormat(format)
@@ -150,12 +152,12 @@ func newCommentCommand(app *appOptions) *cobra.Command {
 		Use:   "comment REVISION",
 		Short: "Post an immediate top-level revision comment",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			text, err := readMessage(message, app.stdin)
 			if err != nil {
 				return err
 			}
-			return app.execute("comment", true, false, "json", func(service *feedbackService) (map[string]any, error) {
+			return app.execute(command.Context(), "comment", true, false, "json", func(service *feedbackService) (map[string]any, error) {
 				return service.postComment(args[0], text)
 			})
 		},
@@ -171,12 +173,12 @@ func newReplyInlineCommand(app *appOptions) *cobra.Command {
 		Use:   "reply-inline REVISION COMMENT_ID",
 		Short: "Draft a true reply to an inline comment",
 		Args:  cobra.ExactArgs(2),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			text, err := readMessage(message, app.stdin)
 			if err != nil {
 				return err
 			}
-			return app.execute("reply-inline", true, true, "json", func(service *feedbackService) (map[string]any, error) {
+			return app.execute(command.Context(), "reply-inline", true, true, "json", func(service *feedbackService) (map[string]any, error) {
 				result, err := service.draftInlineReply(args[0], args[1], text)
 				if err == nil && submit {
 					result["submission"], err = service.submit(args[0])
@@ -195,8 +197,8 @@ func newRemoveCommentCommand(app *appOptions) *cobra.Command {
 		Use:   "remove-comment REVISION COMMENT_ID",
 		Short: "Remove an accidental top-level comment",
 		Args:  cobra.ExactArgs(2),
-		RunE: func(_ *cobra.Command, args []string) error {
-			return app.execute("remove-comment", true, true, "json", func(service *feedbackService) (map[string]any, error) {
+		RunE: func(command *cobra.Command, args []string) error {
+			return app.execute(command.Context(), "remove-comment", true, true, "json", func(service *feedbackService) (map[string]any, error) {
 				return service.removeComment(args[0], args[1])
 			})
 		},
@@ -208,8 +210,8 @@ func newMarkDoneCommand(app *appOptions) *cobra.Command {
 		Use:   "mark-done REVISION COMMENT_ID...",
 		Short: "Mark inline comments Done as drafts",
 		Args:  cobra.MinimumNArgs(2),
-		RunE: func(_ *cobra.Command, args []string) error {
-			return app.execute("mark-done", true, true, "json", func(service *feedbackService) (map[string]any, error) {
+		RunE: func(command *cobra.Command, args []string) error {
+			return app.execute(command.Context(), "mark-done", true, true, "json", func(service *feedbackService) (map[string]any, error) {
 				return service.markDone(args[0], args[1:])
 			})
 		},
@@ -229,8 +231,8 @@ func newRateCommand(app *appOptions, helpful bool) *cobra.Command {
 		Use:   name + " REVISION COMMENT_ID...",
 		Short: short,
 		Args:  cobra.MinimumNArgs(2),
-		RunE: func(_ *cobra.Command, args []string) error {
-			return app.execute(name, true, true, "json", func(service *feedbackService) (map[string]any, error) {
+		RunE: func(command *cobra.Command, args []string) error {
+			return app.execute(command.Context(), name, true, true, "json", func(service *feedbackService) (map[string]any, error) {
 				return service.rate(args[0], args[1:], helpful)
 			})
 		},
@@ -251,7 +253,7 @@ func newFormattedRevisionCommand(app *appOptions, name, short string, action rev
 	addFormatFlag(command, &format)
 	command.PreRunE = func(_ *cobra.Command, _ []string) error { return validateFormat(format) }
 	command.RunE = func(command *cobra.Command, args []string) error {
-		return app.execute(name, true, false, format, func(service *feedbackService) (map[string]any, error) {
+		return app.execute(command.Context(), name, true, false, format, func(service *feedbackService) (map[string]any, error) {
 			return action(service, args[0])
 		})
 	}
@@ -263,8 +265,8 @@ func newRevisionCommand(app *appOptions, name, short string, requireToken, requi
 		Use:   name + " REVISION",
 		Short: short,
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			return app.execute(name, requireToken, requireCookie, "json", func(service *feedbackService) (map[string]any, error) {
+		RunE: func(command *cobra.Command, args []string) error {
+			return app.execute(command.Context(), name, requireToken, requireCookie, "json", func(service *feedbackService) (map[string]any, error) {
 				return action(service, args[0])
 			})
 		},
@@ -272,12 +274,13 @@ func newRevisionCommand(app *appOptions, name, short string, requireToken, requi
 }
 
 func (app *appOptions) execute(
+	ctx context.Context,
 	command string,
 	requireToken, requireCookie bool,
 	format string,
 	action func(*feedbackService) (map[string]any, error),
 ) error {
-	credentials, err := resolveCredentials(credentialOptions{
+	credentials, err := resolveCredentials(ctx, credentialOptions{
 		host: app.host, configPath: app.config, firefoxProfile: app.firefoxProfile,
 		firefoxCookies: app.firefoxCookies || app.firefoxProfile != "",
 		requireToken:   requireToken, requireCookie: requireCookie,
@@ -286,12 +289,15 @@ func (app *appOptions) execute(
 		return err
 	}
 	client := httpTransport{client: defaultHTTPClient()}
+	requests := transportFunc(func(method, target string, headers http.Header, data io.Reader) ([]byte, error) {
+		return client.Request(ctx, method, target, headers, data)
+	})
 	service := &feedbackService{}
 	if requireToken {
-		service.conduit = &conduitClient{host: credentials.host, token: credentials.token, transport: client}
+		service.conduit = &conduitClient{host: credentials.host, token: credentials.token, transport: requests}
 	}
 	if requireCookie {
-		service.web = &webClient{host: credentials.host, cookie: credentials.cookie, transport: client}
+		service.web = &webClient{host: credentials.host, cookie: credentials.cookie, transport: requests}
 	}
 	result, err := action(service)
 	if err != nil {
@@ -316,7 +322,7 @@ func addFormatFlag(command *cobra.Command, format *string) {
 }
 
 func validateFormat(format string) error {
-	if !oneOf(format, "json", "text") {
+	if !slices.Contains([]string{"json", "text"}, format) {
 		return fmt.Errorf("invalid --format value %q", format)
 	}
 	return nil
@@ -346,19 +352,19 @@ func readMessage(options messageOptions, stdin io.Reader) (string, error) {
 	case options.messageFileSet:
 		data, err = os.ReadFile(options.messageFile)
 		if err != nil {
-			return "", fmt.Errorf("Could not read message file: %s", options.messageFile)
+			return "", fmt.Errorf("could not read message file: %s", options.messageFile)
 		}
 	case stdinAvailable(stdin):
 		data, err = io.ReadAll(stdin)
 	default:
-		return "", fmt.Errorf("Provide --message, --message-file, or redirected stdin")
+		return "", fmt.Errorf("provide --message, --message-file, or redirected stdin")
 	}
 	if err != nil {
-		return "", fmt.Errorf("Could not read message: %v", err)
+		return "", fmt.Errorf("could not read message: %w", err)
 	}
 	message := string(data)
 	if strings.TrimSpace(message) == "" {
-		return "", fmt.Errorf("Message must not be empty")
+		return "", fmt.Errorf("message must not be empty")
 	}
 	return message, nil
 }
@@ -380,15 +386,6 @@ func parseTime(value string) (int64, error) {
 		return parsed.Unix(), nil
 	}
 	return 0, fmt.Errorf("--modified-after must be an ISO 8601 time or Unix timestamp")
-}
-
-func oneOf(value string, choices ...string) bool {
-	for _, choice := range choices {
-		if value == choice {
-			return true
-		}
-	}
-	return false
 }
 
 func defaultHTTPClient() *http.Client {

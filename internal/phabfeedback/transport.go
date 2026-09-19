@@ -1,6 +1,7 @@
 package phabfeedback
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,12 +12,18 @@ type transport interface {
 	Request(method, target string, headers http.Header, data io.Reader) ([]byte, error)
 }
 
+type transportFunc func(method, target string, headers http.Header, data io.Reader) ([]byte, error)
+
+func (f transportFunc) Request(method, target string, headers http.Header, data io.Reader) ([]byte, error) {
+	return f(method, target, headers, data)
+}
+
 type httpTransport struct {
 	client *http.Client
 }
 
-func (t httpTransport) Request(method, target string, headers http.Header, data io.Reader) ([]byte, error) {
-	request, err := http.NewRequest(method, target, data)
+func (t httpTransport) Request(ctx context.Context, method, target string, headers http.Header, data io.Reader) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, method, target, data)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -25,7 +32,7 @@ func (t httpTransport) Request(method, target string, headers http.Header, data 
 	if err != nil {
 		return nil, newNetworkError(0, "Request to %s failed: %v", safeLocation(target), err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, newNetworkError(response.StatusCode, "Could not read response from %s", safeLocation(target))

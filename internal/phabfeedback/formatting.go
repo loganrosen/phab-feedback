@@ -17,7 +17,7 @@ func renderText(command string, result map[string]any) (string, error) {
 	case "timeline":
 		return renderTimeline(result), nil
 	default:
-		return "", fmt.Errorf("Text output is not supported for %s", command)
+		return "", fmt.Errorf("text output is not supported for %s", command)
 	}
 }
 
