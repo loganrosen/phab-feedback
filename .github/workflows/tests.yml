@@ -19,13 +19,28 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go test -race ./...
-      - run: go vet ./...
       - run: go build ./cmd/phab-feedback
       - run: go run ./cmd/phab-feedback --help
 
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.2
+      - name: Lint GitHub Actions workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+
   all-checks:
     name: All checks passed
-    needs: [test]
+    needs: [test, lint]
     if: always()
     runs-on: ubuntu-latest
 
