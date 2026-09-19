@@ -21,26 +21,19 @@ separate from the generic behavior.
 
 ## Install and quick start
 
-Python 3.10 or newer is required. To run the
-[PyPI package](https://pypi.org/project/phab-feedback/) without installing it
-persistently:
+Download a native binary from the
+[latest GitHub release](https://github.com/loganrosen/phab-feedback/releases/latest),
+or install from source with Go 1.27.1 or newer:
 
 ```bash
-uvx phab-feedback --help
-```
-
-For a persistent installation, use `uv`:
-
-```bash
-uv tool install phab-feedback
+go install github.com/loganrosen/phab-feedback/cmd/phab-feedback@latest
 phab-feedback --help
 ```
 
-`pipx` is a fallback when `uv` is unavailable:
+To run the latest version without installing an executable:
 
 ```bash
-pipx install phab-feedback
-phab-feedback --help
+go run github.com/loganrosen/phab-feedback/cmd/phab-feedback@latest --help
 ```
 
 Once a Phabricator host and Conduit token are available in `~/.arcrc`, discover
@@ -53,10 +46,10 @@ phab-feedback threads D123
 phab-feedback timeline D123
 ```
 
-With `uvx`, use the same command without the persistent install:
+With `go run`, use the same command without a persistent executable:
 
 ```bash
-uvx phab-feedback timeline D123
+go run github.com/loganrosen/phab-feedback/cmd/phab-feedback@latest timeline D123
 ```
 
 ## Configuration and credentials
@@ -209,7 +202,7 @@ Done, or submission actions.
 
 ## Optional agent skill
 
-The agent skill and Python CLI install separately. The skill provides workflow
+The agent skill and CLI install separately. The skill provides workflow
 and approval guidance; it does not install the package or reimplement the CLI.
 Install the skill with:
 
@@ -218,7 +211,7 @@ npx skills add loganrosen/phab-feedback@phab-feedback -g
 ```
 
 At runtime the skill uses an installed `phab-feedback` command when available,
-or `uvx phab-feedback` as a non-persistent fallback.
+or `go run` as a non-persistent fallback.
 
 ## Troubleshooting
 
@@ -235,9 +228,9 @@ or `uvx phab-feedback` as a non-persistent fallback.
 ```bash
 git clone https://github.com/loganrosen/phab-feedback.git
 cd phab-feedback
-uv sync --locked
-uv run ty check --error-on-warning
-uv run pytest
+go test ./...
+go vet ./...
+go build ./cmd/phab-feedback
 ```
 
 ## Security
