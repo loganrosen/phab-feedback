@@ -1,6 +1,6 @@
 module github.com/loganrosen/phab-feedback
 
-go 1.24.0
+go 1.27.1
 
 require (
 	github.com/relvacode/iso8601 v1.8.0

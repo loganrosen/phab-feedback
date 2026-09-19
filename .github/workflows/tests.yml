@@ -9,18 +9,14 @@ permissions:
 
 jobs:
   test:
-    name: Go ${{ matrix.go-version }}
+    name: Test
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        go-version: ["1.24.x", "stable"]
 
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version-file: go.mod
           cache: true
       - run: go test -race ./...
       - run: go vet ./...

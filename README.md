@@ -23,7 +23,7 @@ separate from the generic behavior.
 
 Download a native binary from the
 [latest GitHub release](https://github.com/loganrosen/phab-feedback/releases/latest),
-or install from source with Go 1.24 or newer:
+or install from source with Go 1.27.1 or newer:
 
 ```bash
 go install github.com/loganrosen/phab-feedback/cmd/phab-feedback@latest

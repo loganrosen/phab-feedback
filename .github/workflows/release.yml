@@ -33,7 +33,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version-file: go.mod
           cache: true
       - name: Build archive
         env:
