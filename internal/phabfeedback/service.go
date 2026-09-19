@@ -480,10 +480,28 @@ func (s *feedbackService) draftInlineReplyValidated(revisionID int, parent valid
 	save := cloneStrings(common)
 	save["op"] = "save"
 	save["id"] = strconv.Itoa(replyID)
-	if _, err := s.web.post(path, save); err != nil {
+	saved, err := s.web.post(path, save)
+	if err != nil {
 		return result, &mutationResultError{
 			result: result,
 			err:    fmt.Errorf("remote partial failure: reply %d was created but could not be saved: %w", replyID, err),
+		}
+	}
+	savedPayload, ok := mapValue(saved["payload"])
+	savedInline, hasInline := savedPayload["inline"]
+	if !ok || !hasInline || savedInline == nil {
+		dialog := strings.TrimSpace(stringValue(savedPayload["dialog"]))
+		detail := "the save response did not include a rendered inline"
+		if dialog != "" {
+			detail = "Phabricator returned a dialog: " + dialog
+		}
+		return result, &mutationResultError{
+			result: result,
+			err: fmt.Errorf(
+				"remote partial failure: reply %d was created but its saved state was not confirmed; %s; "+
+					"inspect or close any editing inline before submitting",
+				replyID, detail,
+			),
 		}
 	}
 	result.Saved = true
@@ -535,6 +553,15 @@ func (s *feedbackService) reply(revision, parent, message string, done, submit b
 			err:    fmt.Errorf("remote partial failure: drafts were created but submission failed: %w", err),
 		}
 	}
+	if !submission.Submitted {
+		return result, &mutationResultError{
+			result: result,
+			err: fmt.Errorf(
+				"remote partial failure: reply draft %d was created but Phabricator reported no publishable effect; inspect the revision",
+				result.CreatedReplyID,
+			),
+		}
+	}
 	result.Draft = false
 	result.Published = true
 	if result.Done != nil {
@@ -543,6 +570,15 @@ func (s *feedbackService) reply(revision, parent, message string, done, submit b
 		result.Done.Published = &published
 	}
 	return result, nil
+}
+
+func commentActionsHaveDraft(comments []commentAction) bool {
+	for _, comment := range comments {
+		if boolPointerValue(comment.Draft) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *feedbackService) removeComment(revision, target string) (removedCommentResult, error) {
@@ -601,12 +637,25 @@ func (s *feedbackService) markDone(revision string, targets []string, submit boo
 	if !submit {
 		return result, nil
 	}
+	if !commentActionsHaveDraft(result.Comments) {
+		result.Submission = &submissionResult{
+			RevisionID: revisionID, Action: "submit", Outcome: "no-effect", Skipped: true,
+			Recovery: "All target comments were already published Done; no submission was needed.",
+		}
+		return result, nil
+	}
 	submission, err := s.submit(revision)
 	result.Submission = &submission
 	if err != nil {
 		return result, &mutationResultError{
 			result: result,
 			err:    fmt.Errorf("remote partial failure: Done drafts were created but submission failed: %w", err),
+		}
+	}
+	if !submission.Submitted {
+		return result, &mutationResultError{
+			result: result,
+			err:    fmt.Errorf("remote partial failure: Done drafts were created but Phabricator reported no publishable effect; inspect the revision"),
 		}
 	}
 	for index := range result.Comments {
@@ -622,7 +671,7 @@ func (s *feedbackService) markDone(revision string, targets []string, submit boo
 func (s *feedbackService) markDoneValidated(revisionID int, comments []validatedComment) (commentActionResult, error) {
 	path := fmt.Sprintf("/differential/comment/inline/edit/%d/", revisionID)
 	result := commentActionResult{RevisionID: revisionID, Action: "done", Comments: make([]commentAction, 0, len(comments))}
-	for _, comment := range comments {
+	for index, comment := range comments {
 		identifier := comment.ID
 		// Conduit reports both published Done and a pending undo draft as
 		// isDone=true, so use the toggle response to establish the final state.
@@ -633,6 +682,7 @@ func (s *feedbackService) markDoneValidated(revisionID int, comments []validated
 			result.Comments = append(result.Comments, commentAction{
 				Action: "done", CommentID: identifier, Recovery: recovery,
 			})
+			appendNotAttempted(&result, comments[index+1:])
 			return result, &mutationResultError{
 				result: result,
 				err:    fmt.Errorf("remote mutation outcome is unknown while marking inline comment %d Done; %s: %w", identifier, recovery, err),
@@ -644,6 +694,7 @@ func (s *feedbackService) markDoneValidated(revisionID int, comments []validated
 			result.Comments = append(result.Comments, commentAction{
 				Action: "done", CommentID: identifier, Recovery: recovery,
 			})
+			appendNotAttempted(&result, comments[index+1:])
 			return result, &mutationResultError{
 				result: result,
 				err:    fmt.Errorf("invalid Done response for inline comment %d; %s: %w", identifier, recovery, err),
@@ -660,6 +711,7 @@ func (s *feedbackService) markDoneValidated(revisionID int, comments []validated
 					ObservedChecked: &observedChecked, ObservedDraftState: &firstDraftState,
 					Recovery: recovery,
 				})
+				appendNotAttempted(&result, comments[index+1:])
 				return result, &mutationResultError{
 					result: result,
 					err:    fmt.Errorf("done retry failed for inline comment %d; %s: %w", identifier, recovery, err),
@@ -674,6 +726,7 @@ func (s *feedbackService) markDoneValidated(revisionID int, comments []validated
 					ObservedChecked: &observedChecked, ObservedDraftState: &firstDraftState,
 					Recovery: recovery,
 				})
+				appendNotAttempted(&result, comments[index+1:])
 				return result, &mutationResultError{
 					result: result,
 					err:    fmt.Errorf("invalid Done retry response for inline comment %d; %s: %w", identifier, recovery, err),
@@ -688,6 +741,7 @@ func (s *feedbackService) markDoneValidated(revisionID int, comments []validated
 				ObservedChecked: &observedChecked, ObservedDraftState: &draftState,
 				Recovery: recovery,
 			})
+			appendNotAttempted(&result, comments[index+1:])
 			return result, &mutationResultError{
 				result: result,
 				err:    fmt.Errorf("server left inline comment %d unchecked; %s", identifier, recovery),
@@ -701,6 +755,12 @@ func (s *feedbackService) markDoneValidated(revisionID int, comments []validated
 		})
 	}
 	return result, nil
+}
+
+func appendNotAttempted(result *commentActionResult, comments []validatedComment) {
+	for _, comment := range comments {
+		result.NotAttempted = append(result.NotAttempted, comment.ID)
+	}
 }
 
 func doneResponseState(response map[string]any) (bool, bool, error) {
@@ -763,7 +823,7 @@ func (s *feedbackService) submit(revision string) (submissionResult, error) {
 	if err != nil {
 		return submissionResult{}, err
 	}
-	result := submissionResult{RevisionID: revisionID, Action: "submit"}
+	result := submissionResult{RevisionID: revisionID, Action: "submit", Outcome: "unknown"}
 	csrf, err := s.web.csrf()
 	if err != nil {
 		return result, err
@@ -772,11 +832,43 @@ func (s *feedbackService) submit(revision string) (submissionResult, error) {
 		"__csrf__": csrf, "__form__": "1", "editengine.actions": "[]", "comment": "", "comment_metadata": "{}", "__ajax__": "true",
 	})
 	if err != nil {
-		return result, err
+		result.OutcomeUnknown = true
+		result.Recovery = "The submission outcome is unknown. Inspect the revision before retrying."
+		return result, &mutationResultError{result: result, err: fmt.Errorf("%s: %w", result.Recovery, err)}
 	}
-	payload, _ := mapValue(response["payload"])
+	payload, ok := mapValue(response["payload"])
+	if !ok {
+		result.OutcomeUnknown = true
+		result.Recovery = "The submission response was invalid. Inspect the revision before retrying."
+		return result, &mutationResultError{result: result, err: errors.New(result.Recovery)}
+	}
+	redirect := strings.TrimSpace(stringValue(payload["redirect"]))
+	if redirect == "" {
+		result.Dialog = strings.TrimSpace(stringValue(payload["dialog"]))
+		if strings.Contains(strings.ToLower(result.Dialog), "no effect") {
+			result.Outcome = "no-effect"
+			result.Skipped = true
+			result.Recovery = "No publishable drafts were found."
+			return result, nil
+		}
+		if result.Dialog == "" {
+			result.OutcomeUnknown = true
+			result.Recovery = "The submission response contained no redirect. Inspect the revision before retrying."
+			return result, &mutationResultError{
+				result: result,
+				err:    errors.New(result.Recovery),
+			}
+		}
+		result.Outcome = "rejected"
+		result.Recovery = "No drafts were published. Resolve the Phabricator dialog, especially any unsaved inline comment or warning, then retry."
+		return result, &mutationResultError{
+			result: result,
+			err:    fmt.Errorf("submission was not accepted; Phabricator returned a dialog: %s; %s", result.Dialog, result.Recovery),
+		}
+	}
+	result.Outcome = "submitted"
 	result.Submitted = true
-	result.Redirect = payload["redirect"]
+	result.Redirect = redirect
 	return result, nil
 }
 

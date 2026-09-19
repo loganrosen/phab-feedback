@@ -3,6 +3,7 @@ package phabfeedback
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +18,7 @@ func TestReplyDoneAndSubmissionPayloads(t *testing.T) {
 		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
-		response(map[string]any{"payload": map[string]any{}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
 		response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
 	)
 	reply, err := service.draftInlineReply("D1", "20", "A reply")
@@ -42,6 +43,124 @@ func TestReplyDoneAndSubmissionPayloads(t *testing.T) {
 	}
 	if transport.requests[4].form(t).Get("editengine.actions") != "[]" {
 		t.Fatal("missing editengine actions")
+	}
+}
+
+func TestSubmitRequiresRedirectConfirmation(t *testing.T) {
+	tests := []struct {
+		name        string
+		payload     map[string]any
+		wantOutcome string
+		wantUnknown bool
+		wantError   string
+	}{
+		{
+			name: "dialog",
+			payload: map[string]any{
+				"dialog": "An inline comment is still being edited.",
+			},
+			wantOutcome: "rejected",
+			wantError:   "unsaved inline comment",
+		},
+		{
+			name:        "missing redirect",
+			payload:     map[string]any{},
+			wantOutcome: "unknown",
+			wantUnknown: true,
+			wantError:   "contained no redirect",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, _ := serviceWith(
+				response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+				response(map[string]any{"payload": test.payload}),
+			)
+			result, err := service.submit("D1")
+			if err == nil || result.Submitted || result.Outcome != test.wantOutcome ||
+				result.OutcomeUnknown != test.wantUnknown ||
+				!strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("unexpected submission result: %#v %v", result, err)
+			}
+		})
+	}
+}
+
+func TestSubmitTreatsNoEffectDialogAsSkipped(t *testing.T) {
+	service, _ := serviceWith(
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"dialog": "No Effect: there are no changes to apply."}}),
+	)
+	result, err := service.submit("D1")
+	if err != nil || result.Submitted || !result.Skipped || result.Outcome != "no-effect" {
+		t.Fatalf("unexpected submission result: %#v %v", result, err)
+	}
+}
+
+func TestReplySaveRequiresInlineConfirmation(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload map[string]any
+		want    string
+	}{
+		{
+			name:    "dialog",
+			payload: map[string]any{"dialog": "This inline is still being edited."},
+			want:    "Phabricator returned a dialog",
+		},
+		{
+			name:    "missing inline",
+			payload: map[string]any{},
+			want:    "did not include a rendered inline",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			inline := transaction(1, "inline", 20, nil)
+			service, _ := serviceWith(
+				conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+				response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+				response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+				response(map[string]any{"payload": test.payload}),
+			)
+			result, err := service.draftInlineReply("D1", "20", "reply")
+			if err == nil || result.CreatedReplyID != 55 || result.Saved || result.Draft ||
+				!strings.Contains(err.Error(), test.want) {
+				t.Fatalf("unexpected reply result: %#v %v", result, err)
+			}
+		})
+	}
+}
+
+func TestReplySubmissionDialogPreservesDraftState(t *testing.T) {
+	inline := transaction(1, "inline", 20, nil)
+	service, _ := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"dialog": "An inline comment is still being edited."}}),
+	)
+	result, err := service.reply("D1", "20", "reply", false, true)
+	if err == nil || !result.Draft || result.Published || result.Submission == nil ||
+		result.Submission.Submitted || result.Submission.Outcome != "rejected" {
+		t.Fatalf("unexpected reply result: %#v %v", result, err)
+	}
+}
+
+func TestReplySubmissionNoEffectIsPartialFailure(t *testing.T) {
+	inline := transaction(1, "inline", 20, nil)
+	service, _ := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"dialog": "No Effect: there are no changes to apply."}}),
+	)
+	result, err := service.reply("D1", "20", "reply", false, true)
+	if err == nil || !result.Draft || result.Published || result.Submission == nil ||
+		!result.Submission.Skipped || !strings.Contains(err.Error(), "no publishable effect") {
+		t.Fatalf("unexpected reply result: %#v %v", result, err)
 	}
 }
 
@@ -256,6 +375,46 @@ func TestMarkDoneMalformedRetryPreservesOnlyObservedState(t *testing.T) {
 	}
 	if len(transport.requests) != 4 {
 		t.Fatalf("request count = %d, want 4", len(transport.requests))
+	}
+}
+
+func TestMarkDoneReportsUnattemptedTargets(t *testing.T) {
+	first := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	second := transaction(2, "inline", 21, map[string]any{"isDone": false})
+	third := transaction(3, "inline", 22, map[string]any{"isDone": false})
+	service, transport := serviceWith(
+		conduitResult(map[string]any{"data": []any{first, second, third}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
+		errors.New("second target failed"),
+	)
+	result, err := service.markDone("D1", []string{"20", "21", "22"}, false)
+	if err == nil || len(result.Comments) != 2 || len(result.NotAttempted) != 1 ||
+		result.NotAttempted[0] != 22 {
+		t.Fatalf("unexpected partial result: %#v %v", result, err)
+	}
+	if len(transport.requests) != 4 {
+		t.Fatalf("request count = %d, want 4", len(transport.requests))
+	}
+}
+
+func TestDoneSubmitSkipsWhenTargetsAreAlreadyPublished(t *testing.T) {
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": true})
+	service, transport := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"isChecked": false, "draftState": true}}),
+		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": false}}),
+	)
+	result, err := service.markDone("D1", []string{"20"}, true)
+	if err != nil || result.Submission == nil || !result.Submission.Skipped ||
+		result.Submission.Submitted || !boolPointerValue(result.Comments[0].Published) {
+		t.Fatalf("unexpected Done result: %#v %v", result, err)
+	}
+	for _, request := range transport.requests {
+		if strings.Contains(request.target, "/differential/revision/edit/1/comment/") {
+			t.Fatal("submitted even though no new Done draft was created")
+		}
 	}
 }
 

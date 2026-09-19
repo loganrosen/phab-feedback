@@ -189,10 +189,15 @@ type commentResult struct {
 }
 
 type submissionResult struct {
-	RevisionID int    `json:"revision_id"`
-	Action     string `json:"action"`
-	Submitted  bool   `json:"submitted"`
-	Redirect   any    `json:"redirect"`
+	RevisionID     int    `json:"revision_id"`
+	Action         string `json:"action"`
+	Outcome        string `json:"outcome"`
+	Submitted      bool   `json:"submitted"`
+	Skipped        bool   `json:"skipped,omitempty"`
+	OutcomeUnknown bool   `json:"outcome_unknown,omitempty"`
+	Redirect       string `json:"redirect,omitempty"`
+	Dialog         string `json:"dialog,omitempty"`
+	Recovery       string `json:"recovery,omitempty"`
 }
 
 type inlineReplyResult struct {
@@ -236,6 +241,7 @@ type commentActionResult struct {
 	Action              string            `json:"action"`
 	MozillaReviewHelper bool              `json:"mozilla_review_helper,omitempty"`
 	Comments            []commentAction   `json:"comments"`
+	NotAttempted        []int             `json:"not_attempted,omitempty"`
 	Submission          *submissionResult `json:"submission,omitempty"`
 }
 
@@ -318,15 +324,17 @@ type replyVerification struct {
 }
 
 type doneVerification struct {
-	CommentID     int  `json:"comment_id"`
-	Found         bool `json:"found"`
-	ConduitIsDone bool `json:"conduit_is_done"`
+	CommentID     int    `json:"comment_id"`
+	Found         bool   `json:"found"`
+	ConduitIsDone bool   `json:"conduit_is_done"`
+	State         string `json:"state"`
 }
 
 type verificationResult struct {
 	RevisionID         int                 `json:"revision_id"`
 	Action             string              `json:"action"`
-	Verified           bool                `json:"verified"`
+	Status             string              `json:"status"`
+	ChecksPassed       bool                `json:"checks_passed"`
 	Replies            []replyVerification `json:"replies"`
 	Done               []doneVerification  `json:"done"`
 	DoneStateAmbiguous bool                `json:"done_state_ambiguous,omitempty"`

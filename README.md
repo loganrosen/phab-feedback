@@ -239,23 +239,37 @@ Phabricator submission is revision-wide for the current user: `submit` and
 every `--submit` form publish all eligible pending inline drafts owned by that
 user on the revision, including drafts created earlier in the browser or by
 another command. Inspect existing drafts before approving publication.
+The CLI only reports publication when Phabricator returns its success redirect.
+Server dialogs and warnings are surfaced as failures and are never
+automatically overridden. If submission reports an inline still being edited,
+save or close that editor in Phabricator and retry after reviewing every
+pending draft. A `done --submit` or batch submission is skipped when every
+target was already published Done and the command created no new drafts; use
+the standalone `submit` command if existing unrelated drafts should still be
+published.
 
 Mutation JSON includes the revision and action plus operation-specific fields
 such as `created_reply_id`, `parent_comment_id`, `draft`, `published`, and
-`final_done`. Batch dry-run entries instead use `planned: true`; they do not
-claim draft, publication, or final Done state before mutation.
+`final_done`. Submission results include `outcome`, `submitted`, and, when
+applicable, `dialog`, `outcome_unknown`, or `recovery`. Batch dry-run entries
+instead use `planned: true`; they do not claim draft, publication, or final
+Done state before mutation.
 If a Done retry fails, `observed_checked` and `observed_draft_state` describe
 only the last confirmed response; normal result fields remain absent because
-the final remote outcome is unknown.
+the final remote outcome is unknown. Multi-target Done failures list later
+comment IDs under `not_attempted`.
 
 The `verify` command exits nonzero when a requested reply is missing, its direct
 parent does not match, or Conduit reports `isDone: false`. Reply verification
 checks visibility and direct-parent linkage but does not independently prove
-publication. Done verification reports `conduit_is_done` and sets the
-result-level `done_state_ambiguous` flag: upstream Conduit represents both
+publication. The top-level `status` is `verified` for definitive reply-only
+checks, `observed` when all requested checks pass but Done state remains
+ambiguous, and `failed` when a check fails. `checks_passed` controls the command
+exit status. Done verification reports `state: "done-or-pending-undo"` and sets
+the result-level `done_state_ambiguous` flag: upstream Conduit represents both
 published `DONE` and a pending `UNDRAFT` transition as `isDone: true`, so it
-cannot prove that no pending undo-Done draft exists. Text output prints the same
-limitation.
+cannot prove that no pending undo-Done draft exists. Text output prints the
+same limitation.
 
 ### Batch action manifests
 
@@ -303,6 +317,9 @@ phab-feedback batch actions.json --submit --format json
 That final submission is not scoped to the manifest. It publishes every
 eligible pending inline draft owned by the current user on the revision,
 including pre-existing browser drafts.
+If every requested Done state is already published and the batch creates no
+new draft, the CLI skips the final submission and reports `state: "unchanged"`
+rather than publishing unrelated drafts.
 
 Validation failures never mutate the revision. Phabricator applies the final
 published inline transactions together, but the preceding draft-creation calls
@@ -312,6 +329,10 @@ exits nonzero and reports `state: "partial"`, attempted or completed mutations,
 and the failed action; it never submits after a draft operation fails. Each
 mutation has a unique `mutation_index` plus its source manifest
 `action_index`, so combined reply-and-Done entries remain unambiguous.
+Phabricator can also return an HTTP-success dialog instead of accepting a
+submission. The CLI treats that as a partial failure, preserves the last
+confirmed draft state, and reports the dialog rather than claiming that the
+mutations were published.
 
 Queue listing, revision inspection, and `comment` use standard Conduit APIs.
 Inline reply drafting, top-level comment removal, Done drafting, and draft

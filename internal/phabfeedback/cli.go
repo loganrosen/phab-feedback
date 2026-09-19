@@ -401,7 +401,7 @@ func newReplyCommand(app *appOptions, revision string) *cobra.Command {
 	}
 	addMessageFlags(command, &message)
 	command.Flags().BoolVar(&done, "done", false, "Also mark the parent comment Done after drafting the reply")
-	command.Flags().BoolVar(&submit, "submit", false, "Publish every pending draft you own on this revision, including unrelated drafts")
+	command.Flags().BoolVar(&submit, "submit", false, "Publish every pending draft you own on this revision, including unrelated drafts; never override warnings")
 	return command
 }
 
@@ -432,12 +432,12 @@ func newDoneCommand(app *appOptions, revision string) *cobra.Command {
 			})
 		},
 	}
-	command.Flags().BoolVar(&submit, "submit", false, "Publish every pending draft you own on this revision, including unrelated drafts")
+	command.Flags().BoolVar(&submit, "submit", false, "After creating a Done draft, publish every pending draft you own on this revision; never override warnings")
 	return command
 }
 
 func newSubmitCommand(app *appOptions, revision string) *cobra.Command {
-	command := newContextActionCommand(app, revision, "submit", "Publish every pending draft you own on this revision", false, true, func(service *feedbackService, revision string) (any, error) {
+	command := newContextActionCommand(app, revision, "submit", "Publish every pending draft you own on this revision; never override warnings", false, true, func(service *feedbackService, revision string) (any, error) {
 		return service.submit(revision)
 	})
 	command.GroupID = "respond"
@@ -461,7 +461,7 @@ func newVerifyCommand(app *appOptions, revision string) *cobra.Command {
 				if err != nil {
 					return result, err
 				}
-				if !result.Verified {
+				if !result.ChecksPassed {
 					return result, &mutationResultError{result: result, err: &commandStatusError{}}
 				}
 				return result, nil
@@ -490,7 +490,7 @@ func newBatchCommand(app *appOptions) *cobra.Command {
 		},
 	}
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "Validate the manifest and target comments without creating drafts")
-	command.Flags().BoolVar(&submit, "submit", false, "After success, publish every pending draft you own on the revision")
+	command.Flags().BoolVar(&submit, "submit", false, "After creating drafts, publish every pending draft you own on the revision; never override warnings")
 	return command
 }
 

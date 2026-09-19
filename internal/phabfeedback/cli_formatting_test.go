@@ -255,9 +255,25 @@ func TestDoneFailureTextPreservesEarlierConfirmedComments(t *testing.T) {
 			{CommentID: 34, Draft: new(true)},
 			{CommentID: 35, Recovery: "Rerun done before submitting."},
 		},
+		NotAttempted: []int{36, 37},
 	}))
 	want := "Created Done drafts for #34 on D12.\n" +
-		"Done action for comment #35 on D12 requires recovery: Rerun done before submitting."
+		"Done action for comment #35 on D12 requires recovery: Rerun done before submitting.\n" +
+		"Not attempted: #36, #37."
+	if got != want {
+		t.Fatalf("text output = %q, want %q", got, want)
+	}
+}
+
+func TestBatchUnchangedTextExplainsSkippedSubmission(t *testing.T) {
+	got := ansi.Strip(renderBatch(batchResult{
+		RevisionID: 12,
+		State:      "unchanged",
+		Submission: &submissionResult{
+			Recovery: "The batch created no new drafts; existing revision drafts were not submitted.",
+		},
+	}))
+	want := "No submission was needed on D12: The batch created no new drafts; existing revision drafts were not submitted."
 	if got != want {
 		t.Fatalf("text output = %q, want %q", got, want)
 	}
@@ -302,22 +318,25 @@ func TestSubmitHelpWarnsAboutRevisionWideDraftPublication(t *testing.T) {
 		if err := root.Execute(); err != nil {
 			t.Fatalf("%v: %v", args, err)
 		}
-		if !strings.Contains(output.String(), "every pending draft you own") {
-			t.Fatalf("%v help omits revision-wide publication warning:\n%s", args, output.String())
+		for _, expected := range []string{"every pending draft you own", "never override warnings"} {
+			if !strings.Contains(output.String(), expected) {
+				t.Fatalf("%v help omits %q:\n%s", args, expected, output.String())
+			}
 		}
 	}
 }
 
 func TestVerificationTextIncludesLimitations(t *testing.T) {
 	got := ansi.Strip(renderVerification(verificationResult{
-		RevisionID: 12,
-		Verified:   true,
-		Done:       []doneVerification{{CommentID: 34, Found: true, ConduitIsDone: true}},
+		RevisionID:   12,
+		Status:       "observed",
+		ChecksPassed: true,
+		Done:         []doneVerification{{CommentID: 34, Found: true, ConduitIsDone: true}},
 		Limitations: []string{
 			"Conduit isDone cannot distinguish published Done from a pending undo-Done draft.",
 		},
 	}))
-	want := "Verified 0 reply links and 1 Conduit Done indicators on D12.\n" +
+	want := "Observed 0 reply links and 1 ambiguous Conduit Done indicators on D12.\n" +
 		"Limitation: Conduit isDone cannot distinguish published Done from a pending undo-Done draft."
 	if got != want {
 		t.Fatalf("text output = %q, want %q", got, want)

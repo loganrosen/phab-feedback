@@ -62,6 +62,9 @@ approval. Prefer message files or stdin:
 - Before any submission, warn that Phabricator publishes every eligible pending
   inline draft owned by the current user on that revision, including unrelated
   drafts created earlier in the browser or by another command.
+- Do not override Phabricator submission warnings. If the CLI reports a dialog,
+  surface it to the user. When an inline is still being edited, have the user
+  save or close that editor, re-inspect pending drafts, and approve a retry.
 - Use `D123 reply ... --submit` only when combined creation and publication
   were explicitly approved.
 - Use `D123 reply ... --done` only when the reply and Done action were both
@@ -101,7 +104,10 @@ publication of all pending drafts was explicitly approved. The CLI validates
 the complete manifest and all target comments before mutation, creates drafts
 in order, submits at most once, and reports unavoidable remote partial failures.
 The final submission is revision-wide for the current user, not scoped to the
-manifest.
+manifest. If all requested Done states are already published and the batch
+creates no new draft, the CLI skips submission so it does not publish unrelated
+drafts; use the standalone `submit` command only after separate approval if
+those existing drafts should be published.
 
 ## Isolate Mozilla-only actions
 
@@ -126,6 +132,7 @@ The command exits nonzero if a visible reply is missing, the direct parent does
 not match, or Conduit reports a requested comment as not Done. It does not
 independently prove reply publication. Upstream Conduit also reports
 `isDone=true` for both published Done and a pending undo-Done draft, so treat
-Done verification as a visible-state check and inspect the revision before
-submission when pending state matters. Do not mark the parent Done without
-separate approval.
+Done verification status `observed` and the per-comment
+`done-or-pending-undo` state as visible-state checks, not definitive
+publication proof. Inspect the revision before submission when pending state
+matters. Do not mark the parent Done without separate approval.

@@ -139,10 +139,24 @@ func (s *feedbackService) batch(manifest batchManifest, submit, dryRun bool) (ba
 	if !submit {
 		return result, nil
 	}
+	if !batchMutationsHaveDraft(result.Mutations) {
+		result.State = "unchanged"
+		result.Submission = &submissionResult{
+			RevisionID: revisionID, Action: "submit", Outcome: "no-effect", Skipped: true,
+			Recovery: "The batch created no new drafts; existing revision drafts were not submitted.",
+		}
+		return result, nil
+	}
 	submission, err := s.submit(manifest.Revision)
 	result.Submission = &submission
 	if err != nil {
 		return failedBatch(result, 0, 0, "submit", completedMutations, err)
+	}
+	if !submission.Submitted {
+		return failedBatch(
+			result, 0, 0, "submit", completedMutations,
+			fmt.Errorf("batch drafts were created but Phabricator reported no publishable effect; inspect the revision"),
+		)
 	}
 	for index := range result.Mutations {
 		if boolPointerValue(result.Mutations[index].Draft) {
@@ -153,6 +167,15 @@ func (s *feedbackService) batch(manifest batchManifest, submit, dryRun bool) (ba
 	}
 	result.State = "published"
 	return result, nil
+}
+
+func batchMutationsHaveDraft(mutations []batchMutation) bool {
+	for _, mutation := range mutations {
+		if boolPointerValue(mutation.Draft) {
+			return true
+		}
+	}
+	return false
 }
 
 func plannedBatchMutations(manifest batchManifest) []batchMutation {
@@ -266,7 +289,7 @@ func (s *feedbackService) verify(revision string, replies []replyExpectation, do
 		}
 	}
 	result := verificationResult{
-		RevisionID: revisionID, Action: "verify", Verified: true,
+		RevisionID: revisionID, Action: "verify", Status: "verified", ChecksPassed: true,
 		Replies: make([]replyVerification, 0, len(replies)),
 		Done:    make([]doneVerification, 0, len(doneIDs)),
 	}
@@ -280,23 +303,34 @@ func (s *feedbackService) verify(revision string, replies []replyExpectation, do
 			ReplyID: expectation.ReplyID, ParentCommentID: expectation.ParentID,
 			Found: found, Linked: linked,
 		})
-		result.Verified = result.Verified && found && linked
+		result.ChecksPassed = result.ChecksPassed && found && linked
 	}
 	for _, identifier := range doneIDs {
 		transaction := byID[identifier]
 		found := transaction != nil && stringValue(transaction["type"]) == "inline"
 		fields, _ := mapValue(transaction["fields"])
 		conduitIsDone := found && boolValue(fields["isDone"])
+		state := "missing"
+		if found {
+			state = "not-done"
+		}
+		if conduitIsDone {
+			state = "done-or-pending-undo"
+		}
 		result.Done = append(result.Done, doneVerification{
-			CommentID: identifier, Found: found, ConduitIsDone: conduitIsDone,
+			CommentID: identifier, Found: found, ConduitIsDone: conduitIsDone, State: state,
 		})
-		result.Verified = result.Verified && found && conduitIsDone
+		result.ChecksPassed = result.ChecksPassed && found && conduitIsDone
 	}
 	if len(doneIDs) > 0 {
 		result.DoneStateAmbiguous = true
+		result.Status = "observed"
 		result.Limitations = append(result.Limitations,
 			"Conduit isDone cannot distinguish published Done from a pending undo-Done draft.",
 		)
+	}
+	if !result.ChecksPassed {
+		result.Status = "failed"
 	}
 	return result, nil
 }

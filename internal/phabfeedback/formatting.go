@@ -55,6 +55,12 @@ func renderText(command string, result any) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if value.Skipped {
+			return detailStyle.Render(fmt.Sprintf("No submission was needed on D%d: %s", value.RevisionID, value.Recovery)), nil
+		}
+		if !value.Submitted {
+			return decisionStyle("unresolved").Render(fmt.Sprintf("Submission was not confirmed on D%d.", value.RevisionID)), nil
+		}
 		return successStyle.Render(fmt.Sprintf("Submitted every pending draft you own on D%d.", value.RevisionID)), nil
 	case "rate-helpful":
 		value, err := typedResult[commentActionResult](result, command)
@@ -132,6 +138,10 @@ func renderInlineReply(result inlineReplyResult) string {
 	}
 	if result.Submission != nil && result.Submission.Submitted {
 		lines = append(lines, successStyle.Render(fmt.Sprintf("Submitted every pending draft you own on D%d.", result.Submission.RevisionID)))
+	} else if result.Submission != nil && result.Submission.Skipped {
+		lines = append(lines, detailStyle.Render(fmt.Sprintf(
+			"No submission was needed on D%d: %s", result.Submission.RevisionID, result.Submission.Recovery,
+		)))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -182,8 +192,19 @@ func renderDone(result commentActionResult) string {
 	}
 	if result.Submission != nil && result.Submission.Submitted {
 		lines = append(lines, successStyle.Render(fmt.Sprintf("Submitted every pending draft you own on D%d.", result.RevisionID)))
+	} else if result.Submission != nil && result.Submission.Skipped {
+		lines = append(lines, detailStyle.Render(fmt.Sprintf(
+			"No submission was needed on D%d: %s", result.RevisionID, result.Submission.Recovery,
+		)))
 	}
 	lines = append(lines, recovery...)
+	if len(result.NotAttempted) > 0 {
+		ids := make([]string, 0, len(result.NotAttempted))
+		for _, identifier := range result.NotAttempted {
+			ids = append(ids, fmt.Sprintf("#%d", identifier))
+		}
+		lines = append(lines, detailStyle.Render("Not attempted: "+strings.Join(ids, ", ")+"."))
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -428,6 +449,12 @@ func renderBatch(result batchResult) string {
 			"Published %d batch mutations and every other pending draft you own on D%d with one submission.",
 			len(result.Mutations), result.RevisionID,
 		))
+	case "unchanged":
+		reason := "the batch created no new drafts"
+		if result.Submission != nil && result.Submission.Recovery != "" {
+			reason = result.Submission.Recovery
+		}
+		return detailStyle.Render(fmt.Sprintf("No submission was needed on D%d: %s", result.RevisionID, reason))
 	case "partial", "failed":
 		if result.Failure == nil {
 			return decisionStyle("unresolved").Render(fmt.Sprintf("Batch stopped after an unreported failure on D%d.", result.RevisionID))
@@ -450,12 +477,17 @@ func renderBatch(result batchResult) string {
 
 func renderVerification(result verificationResult) string {
 	var summary string
-	if result.Verified {
+	switch result.Status {
+	case "verified":
 		summary = successStyle.Render(fmt.Sprintf(
-			"Verified %d reply links and %d Conduit Done indicators on D%d.",
+			"Verified %d reply links on D%d.", len(result.Replies), result.RevisionID,
+		))
+	case "observed":
+		summary = decisionStyle("unknown").Render(fmt.Sprintf(
+			"Observed %d reply links and %d ambiguous Conduit Done indicators on D%d.",
 			len(result.Replies), len(result.Done), result.RevisionID,
 		))
-	} else {
+	default:
 		failed := 0
 		for _, reply := range result.Replies {
 			if !reply.Found || !reply.Linked {

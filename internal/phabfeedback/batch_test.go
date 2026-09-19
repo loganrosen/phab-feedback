@@ -99,7 +99,7 @@ func TestBatchDoneFailureReportsRecoveryAndSkipsSubmit(t *testing.T) {
 		conduitResult(map[string]any{"data": []any{first, second}, "cursor": map[string]any{"after": nil}}),
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
-		response(map[string]any{"payload": map[string]any{}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
 		response(map[string]any{"payload": map[string]any{"isChecked": false, "draftState": true}}),
 		errors.New("retry failed"),
 	)
@@ -157,7 +157,7 @@ func TestBatchDraftsInOrderAndSubmitsOnce(t *testing.T) {
 		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
-		response(map[string]any{"payload": map[string]any{}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
 		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
 		response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
 	)
@@ -187,6 +187,52 @@ func TestBatchDraftsInOrderAndSubmitsOnce(t *testing.T) {
 	}
 }
 
+func TestBatchSubmissionDialogPreservesDraftMutations(t *testing.T) {
+	reply := "reply"
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	service, _ := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"dialog": "An inline comment is still being edited."}}),
+	)
+	result, err := service.batch(batchManifest{
+		Revision: "D1",
+		Actions:  []batchManifestAction{{CommentID: 20, Reply: &reply}},
+	}, true, false)
+	if err == nil || result.State != "partial" || result.Submission == nil ||
+		result.Submission.Submitted || result.Submission.Outcome != "rejected" ||
+		len(result.Mutations) != 1 || !boolPointerValue(result.Mutations[0].Draft) ||
+		boolPointerValue(result.Mutations[0].Published) {
+		t.Fatalf("unexpected batch result: %#v %v", result, err)
+	}
+}
+
+func TestBatchSkipsSubmissionWhenNoDraftWasCreated(t *testing.T) {
+	done := true
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": true})
+	service, transport := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"isChecked": false, "draftState": true}}),
+		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": false}}),
+	)
+	result, err := service.batch(batchManifest{
+		Revision: "D1",
+		Actions:  []batchManifestAction{{CommentID: 20, Done: &done}},
+	}, true, false)
+	if err != nil || result.State != "unchanged" || result.Submission == nil ||
+		!result.Submission.Skipped || result.Submission.Submitted {
+		t.Fatalf("unexpected batch result: %#v %v", result, err)
+	}
+	for _, request := range transport.requests {
+		if strings.Contains(request.target, "/differential/revision/edit/1/comment/") {
+			t.Fatal("submitted even though the batch created no drafts")
+		}
+	}
+}
+
 func TestReplyDoneDoesNotMarkDoneWhenReplyFails(t *testing.T) {
 	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
 	service, transport := serviceWith(
@@ -211,7 +257,7 @@ func TestReplyDoneFailureReportsDraftedReplyAndSkipsSubmit(t *testing.T) {
 		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
-		response(map[string]any{"payload": map[string]any{}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
 		errors.New("Done failed"),
 	)
 	result, err := service.reply("D1", "20", "reply", true, true)
@@ -231,7 +277,7 @@ func TestReplyDoneSubmitsAfterBothDrafts(t *testing.T) {
 		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
-		response(map[string]any{"payload": map[string]any{}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
 		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
 		response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
 	)
@@ -309,9 +355,25 @@ func TestVerifyChecksReplyParentAndDoneState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Verified || !result.Replies[0].Linked || !result.Done[0].ConduitIsDone ||
+	if !result.ChecksPassed || result.Status != "observed" ||
+		!result.Replies[0].Linked || !result.Done[0].ConduitIsDone ||
+		result.Done[0].State != "done-or-pending-undo" ||
 		!result.DoneStateAmbiguous || len(result.Limitations) != 1 {
 		t.Fatalf("unexpected verification: %#v", result)
+	}
+}
+
+func TestVerifyReplyOnlyIsDefinitive(t *testing.T) {
+	root := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	reply := transaction(2, "inline", 55, map[string]any{
+		"isDone": false, "replyToCommentPHID": "PHID-CMT-20",
+	})
+	service, _ := serviceWith(
+		conduitResult(map[string]any{"data": []any{root, reply}, "cursor": map[string]any{"after": nil}}),
+	)
+	result, err := service.verify("D1", []replyExpectation{{ReplyID: 55, ParentID: 20}}, nil)
+	if err != nil || !result.ChecksPassed || result.Status != "verified" || result.DoneStateAmbiguous {
+		t.Fatalf("unexpected verification: %#v %v", result, err)
 	}
 }
 
@@ -332,7 +394,9 @@ func TestVerifyReportsMissingReplyWrongParentAndUncheckedDone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Verified || result.Replies[0].Linked || result.Replies[1].Found || result.Done[0].ConduitIsDone {
+	if result.ChecksPassed || result.Status != "failed" ||
+		result.Replies[0].Linked || result.Replies[1].Found || result.Done[0].ConduitIsDone ||
+		result.Done[0].State != "not-done" {
 		t.Fatalf("unexpected verification: %#v", result)
 	}
 }
@@ -368,7 +432,8 @@ func TestVerifyCLIExitsNonzeroAndPrintsStructuredFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), `"verified": false`) ||
+	if !strings.Contains(string(body), `"status": "failed"`) ||
+		!strings.Contains(string(body), `"checks_passed": false`) ||
 		!strings.Contains(string(body), `"conduit_is_done": false`) {
 		t.Fatalf("unexpected output: %s", body)
 	}
