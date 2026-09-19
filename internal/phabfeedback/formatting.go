@@ -16,8 +16,58 @@ func renderText(command string, result map[string]any) (string, error) {
 		return renderThreads(result), nil
 	case "timeline":
 		return renderTimeline(result), nil
+	case "comment":
+		return fmt.Sprintf("Posted a comment on D%v.", result["revision_id"]), nil
+	case "reply-inline":
+		return renderInlineReply(result), nil
+	case "remove-comment":
+		return fmt.Sprintf("Removed comment #%v from D%v.", result["comment_id"], result["revision_id"]), nil
+	case "mark-done":
+		return renderCommentAction(result, "Marked", "Done as drafts"), nil
+	case "submit":
+		return fmt.Sprintf("Submitted pending drafts on D%v.", result["revision_id"]), nil
+	case "mark-helpful":
+		return renderCommentAction(result, "Rated", "helpful"), nil
+	case "mark-unhelpful":
+		return renderCommentAction(result, "Rated", "unhelpful"), nil
+	case "request-ai-review":
+		return renderAIReview(result), nil
 	default:
 		return "", fmt.Errorf("text output is not supported for %s", command)
+	}
+}
+
+func renderInlineReply(result map[string]any) string {
+	lines := []string{fmt.Sprintf(
+		"Drafted inline reply #%v to comment #%v on D%v.",
+		result["draft_comment_id"],
+		result["parent_comment_id"],
+		result["revision_id"],
+	)}
+	if submission, ok := mapValue(result["submission"]); ok {
+		lines = append(lines, fmt.Sprintf("Submitted pending drafts on D%v.", submission["revision_id"]))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderCommentAction(result map[string]any, verb, outcome string) string {
+	comments, _ := sliceValue(result["comments"])
+	ids := make([]string, 0, len(comments))
+	for _, raw := range comments {
+		comment, _ := mapValue(raw)
+		ids = append(ids, "#"+safe(comment["comment_id"]))
+	}
+	return fmt.Sprintf("%s %s %s on D%v.", verb, strings.Join(ids, ", "), outcome, result["revision_id"])
+}
+
+func renderAIReview(result map[string]any) string {
+	switch stringValue(result["status"]) {
+	case "requested":
+		return fmt.Sprintf("Requested a Review Helper AI review on D%v.", result["revision_id"])
+	case "already-in-progress":
+		return fmt.Sprintf("A Review Helper AI review is already in progress on D%v.", result["revision_id"])
+	default:
+		return fmt.Sprintf("Review Helper responded to the AI review request for D%v.", result["revision_id"])
 	}
 }
 

@@ -32,15 +32,16 @@ Run every example below through `"${PHAB_FEEDBACK[@]}"`.
 Use `list` to discover work and `show` to assess a revision:
 
 ```bash
-"${PHAB_FEEDBACK[@]}" list --role reviewing
-"${PHAB_FEEDBACK[@]}" show D123
+"${PHAB_FEEDBACK[@]}" list --role reviewing --format json
+"${PHAB_FEEDBACK[@]}" show D123 --format json
 ```
 
-Run `threads D123 --state all` for grouped conversations or `timeline D123` for
-the complete chronology before classifying feedback or choosing a mutation.
-Take comment IDs only from their `id` fields. Never infer them from ordering,
-URLs, transaction IDs, or diff IDs. Treat `orphan_replies` as ungrouped; do not
-guess their parent.
+Run `threads D123 --state all --format json` for grouped conversations or
+`timeline D123 --format json` for the complete chronology before classifying
+feedback or choosing a mutation. The CLI defaults to human-readable text, so
+agents should request JSON whenever they need fields or IDs. Take comment IDs
+only from their `id` fields. Never infer them from ordering, URLs, transaction
+IDs, or diff IDs. Treat `orphan_replies` as ungrouped; do not guess their parent.
 
 ## Require approval per mutation
 
