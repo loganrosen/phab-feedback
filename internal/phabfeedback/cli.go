@@ -3,6 +3,7 @@ package phabfeedback
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,6 +31,10 @@ type messageOptions struct {
 	messageSet, messageFileSet bool
 }
 
+type commandStatusError struct{}
+
+func (*commandStatusError) Error() string { return "command reported failed checks" }
+
 const (
 	defaultListRole   = "responsible"
 	defaultListStatus = "open"
@@ -40,7 +45,9 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	root := newRootCommand(args, stdin, stdout, stderr)
 	root.SetArgs(args)
 	if err := root.Execute(); err != nil {
-		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		if _, ok := errors.AsType[*commandStatusError](err); !ok {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		}
 		return 1
 	}
 	return 0
@@ -63,7 +70,7 @@ func newRootCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) *c
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(command *cobra.Command, _ []string) error {
-			return options.execute(command.Context(), "list", true, false, func(service *feedbackService) (map[string]any, error) {
+			return options.execute(command.Context(), "list", true, false, func(service *feedbackService) (any, error) {
 				return service.listRevisions(defaultListRole, defaultListStatus, nil, defaultListLimit, "")
 			})
 		},
@@ -80,10 +87,123 @@ func newRootCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) *c
 		return validateFormat(options.format)
 	}
 	root.AddCommand(newListCommand(options))
+	root.AddCommand(newDoctorCommand(options))
 	if revision := revisionArgument(root, args); revision != "" {
 		root.AddCommand(newRevisionGroup(options, revision))
 	}
 	return root
+}
+
+func newDoctorCommand(app *appOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "doctor",
+		Short: "Diagnose configuration and credentials without making changes",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			result := app.doctor(command.Context())
+			var outputErr error
+			if app.format == "text" {
+				text, err := renderText("doctor", result)
+				if err != nil {
+					return err
+				}
+				_, outputErr = lipgloss.Fprintln(app.stdout, text)
+			} else {
+				encoder := json.NewEncoder(app.stdout)
+				encoder.SetIndent("", "  ")
+				encoder.SetEscapeHTML(false)
+				outputErr = encoder.Encode(result)
+			}
+			if outputErr != nil {
+				return outputErr
+			}
+			if !result.OK {
+				return &commandStatusError{}
+			}
+			return nil
+		},
+	}
+}
+
+func (app *appOptions) doctor(ctx context.Context) doctorResult {
+	options := credentialOptions{
+		host: app.host, configPath: app.config, firefoxProfile: app.firefoxProfile,
+		firefoxCookies: app.firefoxCookies || app.firefoxProfile != "",
+	}
+	base, err := resolveCredentials(ctx, options)
+	if err != nil {
+		return doctorResult{
+			Checks: []doctorCheck{{Name: "host", Status: "error", Message: err.Error()}},
+			OK:     false,
+		}
+	}
+	result := doctorResult{Host: base.host, OK: true}
+	result.Checks = append(result.Checks, doctorCheck{Name: "host", Status: "ok", Message: "resolved " + base.host})
+	client := httpTransport{client: defaultHTTPClient()}
+	requests := transportFunc(func(method, target string, headers http.Header, data io.Reader) ([]byte, error) {
+		return client.Request(ctx, method, target, headers, data)
+	})
+
+	tokenOptions := options
+	tokenOptions.requireToken = true
+	tokenCredentials, tokenErr := resolveCredentials(ctx, tokenOptions)
+	if tokenErr != nil {
+		result.OK = false
+		result.Checks = append(result.Checks, doctorCheck{Name: "conduit", Status: "error", Message: tokenErr.Error()})
+	} else {
+		conduit := conduitClient{host: base.host, token: tokenCredentials.token, transport: requests}
+		var identity struct {
+			UserName string `json:"userName"`
+			RealName string `json:"realName"`
+		}
+		if err := conduit.call("user.whoami", map[string]any{}, &identity); err != nil {
+			result.OK = false
+			result.Checks = append(result.Checks, doctorCheck{Name: "conduit", Status: "error", Message: err.Error()})
+		} else {
+			name := identity.UserName
+			if identity.RealName != "" {
+				name = identity.RealName + " (" + identity.UserName + ")"
+			}
+			result.Checks = append(result.Checks, doctorCheck{Name: "conduit", Status: "ok", Message: "authenticated as " + name})
+		}
+	}
+
+	cookieOptions := options
+	cookieOptions.requireCookie = true
+	cookieCredentials, cookieErr := resolveCredentials(ctx, cookieOptions)
+	if cookieErr != nil {
+		result.Checks = append(result.Checks,
+			doctorCheck{Name: "web session", Status: "warning", Message: cookieErr.Error() + "; browser-only commands are unavailable"},
+			doctorCheck{Name: "Review Helper", Status: "warning", Message: "not checked without a web session"},
+		)
+		return result
+	}
+	web := webClient{host: base.host, cookie: cookieCredentials.cookie, transport: requests}
+	if _, err := web.csrf(); err != nil {
+		result.OK = false
+		result.Checks = append(result.Checks,
+			doctorCheck{Name: "web session", Status: "error", Message: err.Error()},
+			doctorCheck{Name: "Review Helper", Status: "warning", Message: "not checked because the web session failed"},
+		)
+		return result
+	}
+	authenticated, loaded := web.sessionAuthenticated()
+	if !loaded || !authenticated {
+		result.OK = false
+		result.Checks = append(result.Checks,
+			doctorCheck{Name: "web session", Status: "error", Message: "the session cookie did not produce a logged-in Phabricator page"},
+			doctorCheck{Name: "Review Helper", Status: "warning", Message: "not checked because the web session is not logged in"},
+		)
+		return result
+	}
+	result.Checks = append(result.Checks, doctorCheck{Name: "web session", Status: "ok", Message: "authenticated session and CSRF token are available"})
+	hasReviewHelper, detected := web.hasReviewHelper()
+	if detected && hasReviewHelper {
+		result.Checks = append(result.Checks, doctorCheck{Name: "Review Helper", Status: "ok", Message: "best-effort detection found Review Helper on the host homepage"})
+	} else {
+		result.Checks = append(result.Checks, doctorCheck{Name: "Review Helper", Status: "warning", Message: "Review Helper was not referenced on the host homepage; availability is unknown"})
+	}
+	return result
 }
 
 func revisionArgument(root *cobra.Command, args []string) string {
@@ -109,6 +229,11 @@ func revisionArgument(root *cobra.Command, args []string) string {
 				index++
 			}
 			continue
+		}
+		for _, command := range root.Commands() {
+			if arg == command.Name() {
+				return ""
+			}
 		}
 		if strings.HasPrefix(strings.ToLower(arg), "d") || arg[0] >= '0' && arg[0] <= '9' {
 			return arg
@@ -149,16 +274,16 @@ func newRevisionGroup(app *appOptions, revision string) *cobra.Command {
 		},
 		RunE: func(command *cobra.Command, _ []string) error {
 			if timeline {
-				return app.execute(command.Context(), "timeline", true, false, func(service *feedbackService) (map[string]any, error) {
+				return app.execute(command.Context(), "timeline", true, false, func(service *feedbackService) (any, error) {
 					return service.timeline(revision)
 				})
 			}
 			if command.Flags().Changed("threads") {
-				return app.execute(command.Context(), "threads", true, false, func(service *feedbackService) (map[string]any, error) {
+				return app.execute(command.Context(), "threads", true, false, func(service *feedbackService) (any, error) {
 					return service.threads(revision, threadState, currentDiffOnly)
 				})
 			}
-			return app.execute(command.Context(), "overview", true, false, func(service *feedbackService) (map[string]any, error) {
+			return app.execute(command.Context(), "overview", true, false, func(service *feedbackService) (any, error) {
 				summary, err := service.show(revision)
 				if err != nil {
 					return nil, err
@@ -167,7 +292,7 @@ func newRevisionGroup(app *appOptions, revision string) *cobra.Command {
 				if err != nil {
 					return nil, err
 				}
-				return map[string]any{"summary": summary, "threads": threads}, nil
+				return overviewResult{Summary: summary, Threads: threads}, nil
 			})
 		},
 	}
@@ -210,7 +335,7 @@ func newListCommand(app *appOptions) *cobra.Command {
 				}
 				modified = &value
 			}
-			return app.execute(command.Context(), "list", true, false, func(service *feedbackService) (map[string]any, error) {
+			return app.execute(command.Context(), "list", true, false, func(service *feedbackService) (any, error) {
 				return service.listRevisions(role, status, modified, limit, after)
 			})
 		},
@@ -244,7 +369,7 @@ func newCommentCommand(app *appOptions, revision string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.execute(command.Context(), "comment", true, false, func(service *feedbackService) (map[string]any, error) {
+			return app.execute(command.Context(), "comment", true, false, func(service *feedbackService) (any, error) {
 				return service.postComment(revision, text)
 			})
 		},
@@ -266,10 +391,12 @@ func newReplyCommand(app *appOptions, revision string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.execute(command.Context(), "reply", true, true, func(service *feedbackService) (map[string]any, error) {
+			return app.execute(command.Context(), "reply", true, true, func(service *feedbackService) (any, error) {
 				result, err := service.draftInlineReply(revision, args[0], text)
 				if err == nil && submit {
-					result["submission"], err = service.submit(revision)
+					var submission submissionResult
+					submission, err = service.submit(revision)
+					result.Submission = &submission
 				}
 				return result, err
 			})
@@ -287,7 +414,7 @@ func newRemoveCommentCommand(app *appOptions, revision string) *cobra.Command {
 		GroupID: "respond",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			return app.execute(command.Context(), "remove-comment", true, true, func(service *feedbackService) (map[string]any, error) {
+			return app.execute(command.Context(), "remove-comment", true, true, func(service *feedbackService) (any, error) {
 				return service.removeComment(revision, args[0])
 			})
 		},
@@ -301,7 +428,7 @@ func newDoneCommand(app *appOptions, revision string) *cobra.Command {
 		GroupID: "respond",
 		Args:    cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			return app.execute(command.Context(), "done", true, true, func(service *feedbackService) (map[string]any, error) {
+			return app.execute(command.Context(), "done", true, true, func(service *feedbackService) (any, error) {
 				return service.markDone(revision, args)
 			})
 		},
@@ -309,7 +436,9 @@ func newDoneCommand(app *appOptions, revision string) *cobra.Command {
 }
 
 func newSubmitCommand(app *appOptions, revision string) *cobra.Command {
-	command := newContextActionCommand(app, revision, "submit", "Submit pending draft actions and comments", false, true, (*feedbackService).submit)
+	command := newContextActionCommand(app, revision, "submit", "Submit pending draft actions and comments", false, true, func(service *feedbackService, revision string) (any, error) {
+		return service.submit(revision)
+	})
 	command.GroupID = "respond"
 	return command
 }
@@ -332,7 +461,7 @@ func newRateCommand(app *appOptions, revision string) *cobra.Command {
 			if helpful {
 				name = "rate-helpful"
 			}
-			return app.execute(command.Context(), name, true, true, func(service *feedbackService) (map[string]any, error) {
+			return app.execute(command.Context(), name, true, true, func(service *feedbackService) (any, error) {
 				return service.rate(revision, args, helpful)
 			})
 		},
@@ -343,12 +472,14 @@ func newRateCommand(app *appOptions, revision string) *cobra.Command {
 }
 
 func newAIReviewCommand(app *appOptions, revision string) *cobra.Command {
-	command := newContextActionCommand(app, revision, "ai-review", "Request a Review Helper AI review (Mozilla only)", false, true, (*feedbackService).requestAIReview)
+	command := newContextActionCommand(app, revision, "ai-review", "Request a Review Helper AI review (Mozilla only)", false, true, func(service *feedbackService, revision string) (any, error) {
+		return service.requestAIReview(revision)
+	})
 	command.GroupID = "mozilla"
 	return command
 }
 
-type revisionAction func(*feedbackService, string) (map[string]any, error)
+type revisionAction func(*feedbackService, string) (any, error)
 
 func newContextActionCommand(app *appOptions, revision, name, short string, requireToken, requireCookie bool, action revisionAction) *cobra.Command {
 	return &cobra.Command{
@@ -356,7 +487,7 @@ func newContextActionCommand(app *appOptions, revision, name, short string, requ
 		Short: short,
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			return app.execute(command.Context(), name, requireToken, requireCookie, func(service *feedbackService) (map[string]any, error) {
+			return app.execute(command.Context(), name, requireToken, requireCookie, func(service *feedbackService) (any, error) {
 				return action(service, revision)
 			})
 		},
@@ -367,7 +498,7 @@ func (app *appOptions) execute(
 	ctx context.Context,
 	command string,
 	requireToken, requireCookie bool,
-	action func(*feedbackService) (map[string]any, error),
+	action func(*feedbackService) (any, error),
 ) error {
 	credentials, err := resolveCredentials(ctx, credentialOptions{
 		host: app.host, configPath: app.config, firefoxProfile: app.firefoxProfile,

@@ -132,10 +132,13 @@ func (c *conduitClient) paginate(method string, params map[string]any, after str
 }
 
 type webClient struct {
-	host      string
-	cookie    string
-	transport transport
-	csrfToken string
+	host               string
+	cookie             string
+	transport          transport
+	csrfToken          string
+	homepageLoaded     bool
+	authenticated      bool
+	reviewHelperLinked bool
 }
 
 var csrfPatterns = []*regexp.Regexp{
@@ -152,6 +155,11 @@ func (w *webClient) csrf() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	w.homepageLoaded = true
+	lowerBody := bytes.ToLower(body)
+	w.authenticated = bytes.Contains(lowerBody, []byte("/logout/")) ||
+		bytes.Contains(body, []byte(`"user":{"phid":"PHID-USER-`))
+	w.reviewHelperLinked = bytes.Contains(lowerBody, []byte("reviewhelper"))
 	decoded := html.UnescapeString(string(body))
 	for _, pattern := range csrfPatterns {
 		match := pattern.FindStringSubmatch(decoded)
@@ -161,6 +169,14 @@ func (w *webClient) csrf() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("could not extract a CSRF token from the host")
+}
+
+func (w *webClient) sessionAuthenticated() (bool, bool) {
+	return w.authenticated, w.homepageLoaded
+}
+
+func (w *webClient) hasReviewHelper() (bool, bool) {
+	return w.reviewHelperLinked, w.homepageLoaded
 }
 
 func (w *webClient) post(path string, values map[string]string) (map[string]any, error) {
