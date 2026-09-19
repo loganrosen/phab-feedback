@@ -1,4 +1,4 @@
-name: Release to PyPI
+name: Release binaries
 
 on:
   release:
@@ -8,77 +8,80 @@ permissions: {}
 
 jobs:
   build:
-    name: Build and validate distributions
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
 
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/setup-go@v5
         with:
-          python-version: "3.x"
-      - name: Install build tools
-        run: python -m pip install --disable-pip-version-check build twine
-      - name: Build wheel and source distribution
-        run: python -m build
-      - name: Verify release version
+          go-version: stable
+          cache: true
+      - name: Build archive
         env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          python - <<'PY'
-          import email
-          import os
-          import pathlib
-          import zipfile
-
-          wheel = next(pathlib.Path("dist").glob("*.whl"))
-          with zipfile.ZipFile(wheel) as archive:
-              metadata_path = next(
-                  name for name in archive.namelist()
-                  if name.endswith(".dist-info/METADATA")
-              )
-              metadata = email.message_from_bytes(archive.read(metadata_path))
-
-          expected_tag = f"v{metadata['Version']}"
-          actual_tag = os.environ["RELEASE_TAG"]
-          if actual_tag != expected_tag:
-              raise SystemExit(
-                  f"release tag {actual_tag!r} does not match package version "
-                  f"{metadata['Version']!r}; expected {expected_tag!r}"
-              )
-          PY
-      - name: Validate distribution metadata
-        run: python -m twine check --strict dist/*
-      - name: Test installed wheel
-        run: |
-          python -m pip install dist/*.whl
-          phab-feedback --help
-      - name: Store distributions
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+          set -eu
+          go test ./...
+          version="${RELEASE_TAG#v}"
+          name="phab-feedback_${version}_${GOOS}_${GOARCH}"
+          mkdir -p "dist/$name"
+          binary="phab-feedback"
+          if [ "$GOOS" = windows ]; then binary="${binary}.exe"; fi
+          go build -trimpath -ldflags="-s -w" -o "dist/$name/$binary" ./cmd/phab-feedback
+          cp README.md LICENSE "dist/$name/"
+          if [ "$GOOS" = windows ]; then
+            (cd dist && zip -qr "$name.zip" "$name")
+            rm -rf "dist/$name"
+          else
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+            rm -rf "dist/$name"
+          fi
+      - uses: actions/upload-artifact@v4
         with:
-          name: python-package-distributions
-          path: dist/
+          name: phab-feedback-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
           if-no-files-found: error
-          retention-days: 7
 
   publish:
-    name: Publish distributions to PyPI
+    name: Publish release assets
     needs: build
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/phab-feedback
     permissions:
-      id-token: write
+      contents: write
 
     steps:
-      - name: Download distributions
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@v4
         with:
-          name: python-package-distributions
-          path: dist/
-      - name: Publish distributions
-        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
+          pattern: phab-feedback-*
+          path: dist
+          merge-multiple: true
+      - name: Create checksums
+        run: (cd dist && sha256sum * > checksums.txt)
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" dist/* --clobber

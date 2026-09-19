@@ -8,40 +8,28 @@ permissions:
   contents: read
 
 jobs:
-  typecheck:
-    name: Type check
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - run: uv run --locked ty check --error-on-warning --output-format github
-
   test:
+    name: Go ${{ matrix.go-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        go-version: ["1.24.x", "stable"]
 
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-go@v5
         with:
-          python-version: ${{ matrix.python-version }}
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - run: uv run --locked pytest -v
-      - run: uv run --locked phab-feedback --help
+          go-version: ${{ matrix.go-version }}
+          cache: true
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: go build ./cmd/phab-feedback
+      - run: go run ./cmd/phab-feedback --help
 
-  # Single required status check for branch protection, so changing the Python
-  # matrix above never requires updating the repository ruleset.
   all-checks:
     name: All checks passed
-    needs: [typecheck, test]
+    needs: [test]
     if: always()
     runs-on: ubuntu-latest
 

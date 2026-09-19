@@ -10,17 +10,17 @@ requests or expose tokens and cookies in commands or output.
 
 ## Select a runner
 
-Use an installed `phab-feedback` first. Otherwise use `uvx phab-feedback`
-without installing it persistently. Stop with a clear installation error if
-neither runner exists; do not install tools on the user's behalf.
+Use an installed `phab-feedback` first. Otherwise use `go run` without
+installing an executable. Stop with a clear installation error if neither
+runner exists; do not install tools on the user's behalf.
 
 ```bash
 if command -v phab-feedback >/dev/null 2>&1; then
   PHAB_FEEDBACK=(phab-feedback)
-elif command -v uvx >/dev/null 2>&1; then
-  PHAB_FEEDBACK=(uvx phab-feedback)
+elif command -v go >/dev/null 2>&1; then
+  PHAB_FEEDBACK=(go run github.com/loganrosen/phab-feedback/cmd/phab-feedback@latest)
 else
-  printf '%s\n' 'phab-feedback requires phab-feedback or uvx on PATH' >&2
+  printf '%s\n' 'phab-feedback requires phab-feedback or go on PATH' >&2
   exit 1
 fi
 ```
