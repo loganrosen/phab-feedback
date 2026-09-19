@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/relvacode/iso8601"
 	"github.com/spf13/cobra"
 )
@@ -29,8 +30,14 @@ type messageOptions struct {
 	messageSet, messageFileSet bool
 }
 
+const (
+	defaultListRole   = "responsible"
+	defaultListStatus = "open"
+	defaultListLimit  = 25
+)
+
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	root := newRootCommand(stdin, stdout, stderr)
+	root := newRootCommand(args, stdin, stdout, stderr)
 	root.SetArgs(args)
 	if err := root.Execute(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
@@ -39,13 +46,27 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func newRootCommand(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
+func newRootCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	options := &appOptions{stdin: stdin, stdout: stdout, stderr: stderr}
 	root := &cobra.Command{
-		Use:           "phab-feedback",
-		Short:         "Manage Phabricator and Phorge review feedback",
+		Use:   "phab-feedback",
+		Short: "Manage Phabricator and Phorge review feedback",
+		Long:  "List review work, or pass a revision first to inspect and respond to it.",
+		Example: strings.Join([]string{
+			"  phab-feedback",
+			"  phab-feedback list --role reviewing",
+			"  phab-feedback D123",
+			"  phab-feedback D123 --threads=all",
+			"  phab-feedback D123 reply 456 --message-file reply.txt",
+		}, "\n"),
+		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
+		RunE: func(command *cobra.Command, _ []string) error {
+			return options.execute(command.Context(), "list", true, false, func(service *feedbackService) (map[string]any, error) {
+				return service.listRevisions(defaultListRole, defaultListStatus, nil, defaultListLimit, "")
+			})
+		},
 	}
 	root.SetIn(stdin)
 	root.SetOut(stdout)
@@ -58,22 +79,117 @@ func newRootCommand(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	root.PersistentPreRunE = func(_ *cobra.Command, _ []string) error {
 		return validateFormat(options.format)
 	}
-
-	root.AddCommand(
-		newListCommand(options),
-		newShowCommand(options),
-		newThreadsCommand(options),
-		newTimelineCommand(options),
-		newCommentCommand(options),
-		newReplyInlineCommand(options),
-		newRemoveCommentCommand(options),
-		newMarkDoneCommand(options),
-		newSubmitCommand(options),
-		newRateCommand(options, true),
-		newRateCommand(options, false),
-		newRequestAIReviewCommand(options),
-	)
+	root.AddCommand(newListCommand(options))
+	if revision := revisionArgument(root, args); revision != "" {
+		root.AddCommand(newRevisionGroup(options, revision))
+	}
 	return root
+}
+
+func revisionArgument(root *cobra.Command, args []string) string {
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "" {
+			continue
+		}
+		if arg == "help" || arg == cobra.ShellCompRequestCmd || arg == cobra.ShellCompNoDescRequestCmd {
+			continue
+		}
+		if strings.HasPrefix(arg, "--") {
+			name, _, hasValue := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+			flag := root.PersistentFlags().Lookup(name)
+			if !hasValue && flag != nil && flag.NoOptDefVal == "" {
+				index++
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			name := strings.TrimPrefix(arg, "-")
+			flag := root.PersistentFlags().ShorthandLookup(name)
+			if flag != nil && flag.NoOptDefVal == "" {
+				index++
+			}
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(arg), "d") || arg[0] >= '0' && arg[0] <= '9' {
+			return arg
+		}
+		return ""
+	}
+	return ""
+}
+
+func newRevisionGroup(app *appOptions, revision string) *cobra.Command {
+	var threadState string
+	var timeline, currentDiffOnly bool
+	_, revisionErr := revisionNumber(revision)
+	command := &cobra.Command{
+		Use:   revision,
+		Short: "Inspect and respond to " + strings.ToUpper(revision),
+		Args: func(command *cobra.Command, args []string) error {
+			if len(args) == 1 && command.Flags().Changed("threads") {
+				return fmt.Errorf("unexpected argument %q; use --threads=%s", args[0], args[0])
+			}
+			return cobra.NoArgs(command, args)
+		},
+		PreRunE: func(command *cobra.Command, _ []string) error {
+			if revisionErr != nil {
+				return revisionErr
+			}
+			hasThreads := command.Flags().Changed("threads")
+			if timeline && hasThreads {
+				return fmt.Errorf("--timeline and --threads are mutually exclusive")
+			}
+			if hasThreads && !slices.Contains([]string{"unresolved", "resolved", "all"}, threadState) {
+				return fmt.Errorf("invalid --threads value %q", threadState)
+			}
+			if currentDiffOnly && !hasThreads {
+				return fmt.Errorf("--current-diff-only requires --threads")
+			}
+			return nil
+		},
+		RunE: func(command *cobra.Command, _ []string) error {
+			if timeline {
+				return app.execute(command.Context(), "timeline", true, false, func(service *feedbackService) (map[string]any, error) {
+					return service.timeline(revision)
+				})
+			}
+			if command.Flags().Changed("threads") {
+				return app.execute(command.Context(), "threads", true, false, func(service *feedbackService) (map[string]any, error) {
+					return service.threads(revision, threadState, currentDiffOnly)
+				})
+			}
+			return app.execute(command.Context(), "overview", true, false, func(service *feedbackService) (map[string]any, error) {
+				summary, err := service.show(revision)
+				if err != nil {
+					return nil, err
+				}
+				threads, err := service.threads(revision, "unresolved", false)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{"summary": summary, "threads": threads}, nil
+			})
+		},
+	}
+	command.Flags().BoolVar(&timeline, "timeline", false, "Show the complete chronological feedback timeline")
+	command.Flags().StringVar(&threadState, "threads", "", "Show threads: unresolved, resolved, or all")
+	command.Flags().Lookup("threads").NoOptDefVal = "unresolved"
+	command.Flags().BoolVar(&currentDiffOnly, "current-diff-only", false, "Only include threads rooted on the current diff")
+	command.AddGroup(
+		&cobra.Group{ID: "respond", Title: "Respond:"},
+		&cobra.Group{ID: "mozilla", Title: "Mozilla Review Helper:"},
+	)
+	command.AddCommand(
+		newCommentCommand(app, revision),
+		newReplyCommand(app, revision),
+		newRemoveCommentCommand(app, revision),
+		newDoneCommand(app, revision),
+		newSubmitCommand(app, revision),
+		newRateCommand(app, revision),
+		newAIReviewCommand(app, revision),
+	)
+	return command
 }
 
 func newListCommand(app *appOptions) *cobra.Command {
@@ -100,10 +216,10 @@ func newListCommand(app *appOptions) *cobra.Command {
 			})
 		},
 	}
-	command.Flags().StringVar(&role, "role", "responsible", "Relationship to listed revisions: responsible, authored, or reviewing")
-	command.Flags().StringVar(&status, "status", "open", "Revision status filter: open, closed, or all")
+	command.Flags().StringVar(&role, "role", defaultListRole, "Relationship to listed revisions: responsible, authored, or reviewing")
+	command.Flags().StringVar(&status, "status", defaultListStatus, "Revision status filter: open, closed, or all")
 	command.Flags().StringVar(&modifiedAfter, "modified-after", "", "Only revisions updated after an ISO 8601 time or Unix timestamp")
-	command.Flags().IntVar(&limit, "limit", 25, "Maximum revisions to return")
+	command.Flags().IntVar(&limit, "limit", defaultListLimit, "Maximum revisions to return")
 	command.Flags().StringVar(&after, "after", "", "Continue from a cursor returned by an earlier list command")
 	command.PreRunE = func(_ *cobra.Command, _ []string) error {
 		if !slices.Contains([]string{"responsible", "authored", "reviewing"}, role) {
@@ -117,51 +233,20 @@ func newListCommand(app *appOptions) *cobra.Command {
 	return command
 }
 
-func newShowCommand(app *appOptions) *cobra.Command {
-	return newFormattedRevisionCommand(app, "show", "Show revision metadata and feedback counts", (*feedbackService).show)
-}
-
-func newThreadsCommand(app *appOptions) *cobra.Command {
-	var state string
-	var currentDiffOnly bool
-	command := &cobra.Command{
-		Use:   "threads REVISION",
-		Short: "Show inline feedback grouped into threads",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(command *cobra.Command, args []string) error {
-			return app.execute(command.Context(), "threads", true, false, func(service *feedbackService) (map[string]any, error) {
-				return service.threads(args[0], state, currentDiffOnly)
-			})
-		},
-	}
-	command.Flags().StringVar(&state, "state", "unresolved", "Thread state filter: unresolved, resolved, or all")
-	command.Flags().BoolVar(&currentDiffOnly, "current-diff-only", false, "Only include threads rooted on the current diff")
-	command.PreRunE = func(_ *cobra.Command, _ []string) error {
-		if !slices.Contains([]string{"unresolved", "resolved", "all"}, state) {
-			return fmt.Errorf("invalid --state value %q", state)
-		}
-		return nil
-	}
-	return command
-}
-
-func newTimelineCommand(app *appOptions) *cobra.Command {
-	return newFormattedRevisionCommand(app, "timeline", "Show structured general and inline feedback", (*feedbackService).timeline)
-}
-
-func newCommentCommand(app *appOptions) *cobra.Command {
+func newCommentCommand(app *appOptions, revision string) *cobra.Command {
 	message := messageOptions{}
 	command := &cobra.Command{
-		Use:   "comment REVISION",
-		Short: "Post an immediate top-level revision comment",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(command *cobra.Command, args []string) error {
+		Use:     "comment",
+		Short:   "Post an immediate top-level revision comment",
+		GroupID: "respond",
+		Args:    cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
 			text, err := readMessage(message, app.stdin)
 			if err != nil {
 				return err
 			}
 			return app.execute(command.Context(), "comment", true, false, func(service *feedbackService) (map[string]any, error) {
-				return service.postComment(args[0], text)
+				return service.postComment(revision, text)
 			})
 		},
 	}
@@ -169,22 +254,23 @@ func newCommentCommand(app *appOptions) *cobra.Command {
 	return command
 }
 
-func newReplyInlineCommand(app *appOptions) *cobra.Command {
+func newReplyCommand(app *appOptions, revision string) *cobra.Command {
 	message := messageOptions{}
 	var submit bool
 	command := &cobra.Command{
-		Use:   "reply-inline REVISION COMMENT_ID",
-		Short: "Draft a true reply to an inline comment",
-		Args:  cobra.ExactArgs(2),
+		Use:     "reply COMMENT_ID",
+		Short:   "Draft a true reply to an inline comment",
+		GroupID: "respond",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			text, err := readMessage(message, app.stdin)
 			if err != nil {
 				return err
 			}
-			return app.execute(command.Context(), "reply-inline", true, true, func(service *feedbackService) (map[string]any, error) {
-				result, err := service.draftInlineReply(args[0], args[1], text)
+			return app.execute(command.Context(), "reply", true, true, func(service *feedbackService) (map[string]any, error) {
+				result, err := service.draftInlineReply(revision, args[0], text)
 				if err == nil && submit {
-					result["submission"], err = service.submit(args[0])
+					result["submission"], err = service.submit(revision)
 				}
 				return result, err
 			})
@@ -195,79 +281,84 @@ func newReplyInlineCommand(app *appOptions) *cobra.Command {
 	return command
 }
 
-func newRemoveCommentCommand(app *appOptions) *cobra.Command {
+func newRemoveCommentCommand(app *appOptions, revision string) *cobra.Command {
 	return &cobra.Command{
-		Use:   "remove-comment REVISION COMMENT_ID",
-		Short: "Remove an accidental top-level comment",
-		Args:  cobra.ExactArgs(2),
+		Use:     "remove-comment COMMENT_ID",
+		Short:   "Remove an accidental top-level comment",
+		GroupID: "respond",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			return app.execute(command.Context(), "remove-comment", true, true, func(service *feedbackService) (map[string]any, error) {
-				return service.removeComment(args[0], args[1])
+				return service.removeComment(revision, args[0])
 			})
 		},
 	}
 }
 
-func newMarkDoneCommand(app *appOptions) *cobra.Command {
+func newDoneCommand(app *appOptions, revision string) *cobra.Command {
 	return &cobra.Command{
-		Use:   "mark-done REVISION COMMENT_ID...",
-		Short: "Mark inline comments Done as drafts",
-		Args:  cobra.MinimumNArgs(2),
+		Use:     "done COMMENT_ID...",
+		Short:   "Mark inline comments Done as drafts",
+		GroupID: "respond",
+		Args:    cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			return app.execute(command.Context(), "mark-done", true, true, func(service *feedbackService) (map[string]any, error) {
-				return service.markDone(args[0], args[1:])
+			return app.execute(command.Context(), "done", true, true, func(service *feedbackService) (map[string]any, error) {
+				return service.markDone(revision, args)
 			})
 		},
 	}
 }
 
-func newSubmitCommand(app *appOptions) *cobra.Command {
-	return newRevisionCommand(app, "submit", "Submit pending draft actions and comments", false, true, (*feedbackService).submit)
+func newSubmitCommand(app *appOptions, revision string) *cobra.Command {
+	command := newContextActionCommand(app, revision, "submit", "Submit pending draft actions and comments", false, true, (*feedbackService).submit)
+	command.GroupID = "respond"
+	return command
 }
 
-func newRateCommand(app *appOptions, helpful bool) *cobra.Command {
-	name, short := "mark-unhelpful", "Rate Review Helper feedback unhelpful (Mozilla only)"
-	if helpful {
-		name, short = "mark-helpful", "Rate Review Helper feedback helpful (Mozilla only)"
-	}
-	return &cobra.Command{
-		Use:   name + " REVISION COMMENT_ID...",
-		Short: short,
-		Args:  cobra.MinimumNArgs(2),
+func newRateCommand(app *appOptions, revision string) *cobra.Command {
+	var helpful, unhelpful bool
+	command := &cobra.Command{
+		Use:     "rate COMMENT_ID...",
+		Short:   "Rate Review Helper feedback (Mozilla only)",
+		GroupID: "mozilla",
+		Args:    cobra.MinimumNArgs(1),
+		PreRunE: func(_ *cobra.Command, _ []string) error {
+			if helpful == unhelpful {
+				return fmt.Errorf("exactly one of --helpful or --unhelpful is required")
+			}
+			return nil
+		},
 		RunE: func(command *cobra.Command, args []string) error {
+			name := "rate-unhelpful"
+			if helpful {
+				name = "rate-helpful"
+			}
 			return app.execute(command.Context(), name, true, true, func(service *feedbackService) (map[string]any, error) {
-				return service.rate(args[0], args[1:], helpful)
+				return service.rate(revision, args, helpful)
 			})
 		},
 	}
+	command.Flags().BoolVar(&helpful, "helpful", false, "Rate the comments helpful")
+	command.Flags().BoolVar(&unhelpful, "unhelpful", false, "Rate the comments unhelpful")
+	return command
 }
 
-func newRequestAIReviewCommand(app *appOptions) *cobra.Command {
-	return newRevisionCommand(app, "request-ai-review", "Request a Review Helper AI review (Mozilla only)", false, true, (*feedbackService).requestAIReview)
+func newAIReviewCommand(app *appOptions, revision string) *cobra.Command {
+	command := newContextActionCommand(app, revision, "ai-review", "Request a Review Helper AI review (Mozilla only)", false, true, (*feedbackService).requestAIReview)
+	command.GroupID = "mozilla"
+	return command
 }
 
 type revisionAction func(*feedbackService, string) (map[string]any, error)
 
-func newFormattedRevisionCommand(app *appOptions, name, short string, action revisionAction) *cobra.Command {
-	command := newRevisionCommand(app, name, short, true, false, func(service *feedbackService, revision string) (map[string]any, error) {
-		return action(service, revision)
-	})
-	command.RunE = func(command *cobra.Command, args []string) error {
-		return app.execute(command.Context(), name, true, false, func(service *feedbackService) (map[string]any, error) {
-			return action(service, args[0])
-		})
-	}
-	return command
-}
-
-func newRevisionCommand(app *appOptions, name, short string, requireToken, requireCookie bool, action revisionAction) *cobra.Command {
+func newContextActionCommand(app *appOptions, revision, name, short string, requireToken, requireCookie bool, action revisionAction) *cobra.Command {
 	return &cobra.Command{
-		Use:   name + " REVISION",
+		Use:   name,
 		Short: short,
-		Args:  cobra.ExactArgs(1),
-		RunE: func(command *cobra.Command, args []string) error {
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
 			return app.execute(command.Context(), name, requireToken, requireCookie, func(service *feedbackService) (map[string]any, error) {
-				return action(service, args[0])
+				return action(service, revision)
 			})
 		},
 	}
@@ -307,7 +398,7 @@ func (app *appOptions) execute(
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(app.stdout, text)
+		_, err = lipgloss.Fprintln(app.stdout, text)
 		return err
 	}
 	encoder := json.NewEncoder(app.stdout)
