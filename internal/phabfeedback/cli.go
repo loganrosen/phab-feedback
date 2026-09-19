@@ -95,16 +95,15 @@ func revisionArgument(root *cobra.Command, args []string) string {
 		if arg == "help" || arg == cobra.ShellCompRequestCmd || arg == cobra.ShellCompNoDescRequestCmd {
 			continue
 		}
-		if strings.HasPrefix(arg, "--") {
-			name, _, hasValue := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+		if value, ok := strings.CutPrefix(arg, "--"); ok {
+			name, _, hasValue := strings.Cut(value, "=")
 			flag := root.PersistentFlags().Lookup(name)
 			if !hasValue && flag != nil && flag.NoOptDefVal == "" {
 				index++
 			}
 			continue
 		}
-		if strings.HasPrefix(arg, "-") {
-			name := strings.TrimPrefix(arg, "-")
+		if name, ok := strings.CutPrefix(arg, "-"); ok {
 			flag := root.PersistentFlags().ShorthandLookup(name)
 			if flag != nil && flag.NoOptDefVal == "" {
 				index++
