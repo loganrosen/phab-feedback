@@ -18,212 +18,215 @@ var (
 	successStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.BrightGreen)
 )
 
-func renderText(command string, result map[string]any) (string, error) {
+func renderText(command string, result any) (string, error) {
 	switch command {
 	case "list":
-		return revisionList(result), nil
+		value, err := typedResult[revisionListResult](result, command)
+		return revisionList(value), err
 	case "overview":
-		return renderOverview(result)
+		value, err := typedResult[overviewResult](result, command)
+		return renderOverview(value), err
 	case "threads":
-		return renderThreads(result), nil
+		value, err := typedResult[threadsResult](result, command)
+		return renderThreads(value), err
 	case "timeline":
-		return renderTimeline(result), nil
+		value, err := typedResult[timelineResult](result, command)
+		return renderTimeline(value), err
 	case "comment":
-		return successStyle.Render(fmt.Sprintf("Posted a comment on D%v.", result["revision_id"])), nil
+		value, err := typedResult[commentResult](result, command)
+		if err != nil {
+			return "", err
+		}
+		return successStyle.Render(fmt.Sprintf("Posted a comment on D%d.", value.RevisionID)), nil
 	case "reply":
-		return renderInlineReply(result), nil
+		value, err := typedResult[inlineReplyResult](result, command)
+		return renderInlineReply(value), err
 	case "remove-comment":
-		return successStyle.Render(fmt.Sprintf("Removed comment #%v from D%v.", result["comment_id"], result["revision_id"])), nil
+		value, err := typedResult[removedCommentResult](result, command)
+		if err != nil {
+			return "", err
+		}
+		return successStyle.Render(fmt.Sprintf("Removed comment #%d from D%d.", value.CommentID, value.RevisionID)), nil
 	case "done":
-		return renderCommentAction(result, "Marked", "Done as drafts"), nil
+		value, err := typedResult[commentActionResult](result, command)
+		return renderCommentAction(value, "Marked", "Done as drafts"), err
 	case "submit":
-		return successStyle.Render(fmt.Sprintf("Submitted pending drafts on D%v.", result["revision_id"])), nil
+		value, err := typedResult[submissionResult](result, command)
+		if err != nil {
+			return "", err
+		}
+		return successStyle.Render(fmt.Sprintf("Submitted pending drafts on D%d.", value.RevisionID)), nil
 	case "rate-helpful":
-		return renderCommentAction(result, "Rated", "helpful"), nil
+		value, err := typedResult[commentActionResult](result, command)
+		return renderCommentAction(value, "Rated", "helpful"), err
 	case "rate-unhelpful":
-		return renderCommentAction(result, "Rated", "unhelpful"), nil
+		value, err := typedResult[commentActionResult](result, command)
+		return renderCommentAction(value, "Rated", "unhelpful"), err
 	case "ai-review":
-		return renderAIReview(result), nil
+		value, err := typedResult[aiReviewResult](result, command)
+		return renderAIReview(value), err
+	case "doctor":
+		value, err := typedResult[doctorResult](result, command)
+		return renderDoctor(value), err
 	default:
 		return "", fmt.Errorf("text output is not supported for %s", command)
 	}
 }
 
-func renderOverview(result map[string]any) (string, error) {
-	summary, ok := mapValue(result["summary"])
+func typedResult[T any](result any, command string) (T, error) {
+	value, ok := result.(T)
 	if !ok {
-		return "", fmt.Errorf("overview returned an invalid summary")
+		var zero T
+		return zero, fmt.Errorf("%s returned invalid result data", command)
 	}
-	threads, ok := mapValue(result["threads"])
-	if !ok {
-		return "", fmt.Errorf("overview returned invalid threads")
-	}
-	return revisionSummary(summary) + "\n\n" + renderThreads(threads), nil
+	return value, nil
 }
 
-func renderInlineReply(result map[string]any) string {
+func renderOverview(result overviewResult) string {
+	return revisionSummaryText(result.Summary) + "\n\n" + renderThreads(result.Threads)
+}
+
+func renderInlineReply(result inlineReplyResult) string {
 	lines := []string{successStyle.Render(fmt.Sprintf(
-		"Drafted inline reply #%v to comment #%v on D%v.",
-		result["draft_comment_id"],
-		result["parent_comment_id"],
-		result["revision_id"],
+		"Drafted inline reply #%d to comment #%d on D%d.",
+		result.DraftCommentID,
+		result.ParentCommentID,
+		result.RevisionID,
 	))}
-	if submission, ok := mapValue(result["submission"]); ok {
-		lines = append(lines, successStyle.Render(fmt.Sprintf("Submitted pending drafts on D%v.", submission["revision_id"])))
+	if result.Submission != nil {
+		lines = append(lines, successStyle.Render(fmt.Sprintf("Submitted pending drafts on D%d.", result.Submission.RevisionID)))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func renderCommentAction(result map[string]any, verb, outcome string) string {
-	comments, _ := sliceValue(result["comments"])
-	ids := make([]string, 0, len(comments))
-	for _, raw := range comments {
-		comment, _ := mapValue(raw)
-		ids = append(ids, "#"+safe(comment["comment_id"]))
+func renderCommentAction(result commentActionResult, verb, outcome string) string {
+	ids := make([]string, 0, len(result.Comments))
+	for _, comment := range result.Comments {
+		ids = append(ids, fmt.Sprintf("#%d", comment.CommentID))
 	}
-	return successStyle.Render(fmt.Sprintf("%s %s %s on D%v.", verb, strings.Join(ids, ", "), outcome, result["revision_id"]))
+	return successStyle.Render(fmt.Sprintf("%s %s %s on D%d.", verb, strings.Join(ids, ", "), outcome, result.RevisionID))
 }
 
-func renderAIReview(result map[string]any) string {
-	switch stringValue(result["status"]) {
+func renderAIReview(result aiReviewResult) string {
+	switch result.Status {
 	case "requested":
-		return successStyle.Render(fmt.Sprintf("Requested a Review Helper AI review on D%v.", result["revision_id"]))
+		return successStyle.Render(fmt.Sprintf("Requested a Review Helper AI review on D%d.", result.RevisionID))
 	case "already-in-progress":
-		return detailStyle.Render(fmt.Sprintf("A Review Helper AI review is already in progress on D%v.", result["revision_id"]))
+		return detailStyle.Render(fmt.Sprintf("A Review Helper AI review is already in progress on D%d.", result.RevisionID))
 	default:
-		return successStyle.Render(fmt.Sprintf("Review Helper responded to the AI review request for D%v.", result["revision_id"]))
+		return successStyle.Render(fmt.Sprintf("Review Helper responded to the AI review request for D%d.", result.RevisionID))
 	}
 }
 
-func revisionList(result map[string]any) string {
-	lines := []string{headerStyle.Render(fmt.Sprintf("%v revisions", result["count"])) + detailStyle.Render(fmt.Sprintf(" (%s, %s)", safe(result["role"]), safe(result["status"])))}
-	revisions, _ := sliceValue(result["revisions"])
-	for index, raw := range revisions {
+func revisionList(result revisionListResult) string {
+	lines := []string{headerStyle.Render(fmt.Sprintf("%d revisions", result.Count)) + detailStyle.Render(fmt.Sprintf(" (%s, %s)", safe(result.Role), safe(result.Status)))}
+	for index, revision := range result.Revisions {
 		if index > 0 {
 			lines = append(lines, "")
 		}
-		revision, _ := mapValue(raw)
-		status, _ := mapValue(revision["status"])
 		lines = append(lines, fmt.Sprintf(
 			"%s  %s  %s",
-			idStyle.Render(fmt.Sprintf("D%v", revision["id"])),
-			statusStyle(status).Render(statusText(status)),
-			titleStyle.Render(safe(orDefault(revision["title"], "(untitled)"))),
+			idStyle.Render(fmt.Sprintf("D%v", revision.ID)),
+			statusStyle(revision.Status).Render(statusText(revision.Status)),
+			titleStyle.Render(safe(orDefault(revision.Title, "(untitled)"))),
 		))
-		reviewers, _ := sliceValue(revision["reviewers"])
-		reviewerText := make([]string, 0, len(reviewers))
-		for _, rawReviewer := range reviewers {
-			reviewer, _ := mapValue(rawReviewer)
-			reviewerStatus := safe(orDefault(reviewer["status"], "unknown"))
-			reviewerText = append(reviewerText, fmt.Sprintf("%s %s", name(reviewer), decisionStyle(reviewerStatus).Render(decisionText(reviewerStatus))))
+		reviewerText := make([]string, 0, len(revision.Reviewers))
+		for _, reviewer := range revision.Reviewers {
+			reviewerStatus := safe(orDefault(reviewer.Decision, "unknown"))
+			reviewerText = append(reviewerText, fmt.Sprintf("%s %s", name(&reviewer.Handle), decisionStyle(reviewerStatus).Render(decisionText(reviewerStatus))))
 		}
 		if len(reviewerText) == 0 {
 			reviewerText = []string{"none"}
 		}
-		author, _ := mapValue(revision["author"])
-		lines = append(lines, fmt.Sprintf("  %s  %s", labelStyle.Render("Author   "), name(author)))
+		lines = append(lines, fmt.Sprintf("  %s  %s", labelStyle.Render("Author   "), name(revision.Author)))
 		lines = append(lines, fmt.Sprintf("  %s  %s", labelStyle.Render("Reviewers"), strings.Join(reviewerText, ", ")))
 		if mergeStatus := renderMergeStatus(revision, false); mergeStatus != "" {
 			lines = append(lines, fmt.Sprintf("  %s  %s", labelStyle.Render("Merge    "), mergeStatus))
 		}
-		if revision["modified"] != nil {
-			lines = append(lines, fmt.Sprintf("  %s  %s", labelStyle.Render("Updated  "), detailStyle.Render(safe(revision["modified"]))))
+		if revision.Modified != nil {
+			lines = append(lines, fmt.Sprintf("  %s  %s", labelStyle.Render("Updated  "), detailStyle.Render(safe(revision.Modified))))
 		}
-		if revision["uri"] != nil {
-			lines = append(lines, fmt.Sprintf("  %s  %s", labelStyle.Render("URL      "), linkStyle.Render(safe(revision["uri"]))))
+		if revision.URI != nil {
+			lines = append(lines, fmt.Sprintf("  %s  %s", labelStyle.Render("URL      "), linkStyle.Render(safe(revision.URI))))
 		}
 	}
-	cursor, _ := mapValue(result["cursor"])
-	if stringValue(cursor["after"]) != "" {
-		lines = append(lines, "", labelStyle.Render("Next cursor  ")+safe(cursor["after"]))
+	if stringValue(result.Cursor["after"]) != "" {
+		lines = append(lines, "", labelStyle.Render("Next cursor  ")+safe(result.Cursor["after"]))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func revisionSummary(result map[string]any) string {
-	revision, _ := mapValue(result["revision"])
-	feedback, _ := mapValue(result["feedback"])
-	status, _ := mapValue(revision["status"])
-	reviewers, _ := sliceValue(revision["reviewers"])
-	reviewerText := make([]string, 0, len(reviewers))
-	for _, raw := range reviewers {
-		reviewer, _ := mapValue(raw)
-		reviewerStatus := safe(orDefault(reviewer["status"], "unknown"))
-		reviewerText = append(reviewerText, fmt.Sprintf("%s %s", name(reviewer), decisionStyle(reviewerStatus).Render(decisionText(reviewerStatus))))
+func revisionSummaryText(result revisionSummary) string {
+	revision := result.Revision
+	feedback := result.Feedback
+	reviewerText := make([]string, 0, len(revision.Reviewers))
+	for _, reviewer := range revision.Reviewers {
+		reviewerStatus := safe(orDefault(reviewer.Decision, "unknown"))
+		reviewerText = append(reviewerText, fmt.Sprintf("%s %s", name(&reviewer.Handle), decisionStyle(reviewerStatus).Render(decisionText(reviewerStatus))))
 	}
 	if len(reviewerText) == 0 {
 		reviewerText = []string{"none"}
 	}
-	author, _ := mapValue(revision["author"])
 	lines := []string{
-		fmt.Sprintf("%s  %s  %s", idStyle.Render(fmt.Sprintf("D%v", revision["id"])), statusStyle(status).Render(statusText(status)), titleStyle.Render(safe(orDefault(revision["title"], "(untitled)")))),
-		fmt.Sprintf("%s  %s", labelStyle.Render("Author             "), name(author)),
+		fmt.Sprintf("%s  %s  %s", idStyle.Render(fmt.Sprintf("D%v", revision.ID)), statusStyle(revision.Status).Render(statusText(revision.Status)), titleStyle.Render(safe(orDefault(revision.Title, "(untitled)")))),
+		fmt.Sprintf("%s  %s", labelStyle.Render("Author             "), name(revision.Author)),
 		fmt.Sprintf("%s  %s", labelStyle.Render("Reviewers          "), strings.Join(reviewerText, ", ")),
-		fmt.Sprintf("%s  %v unresolved, %v resolved, %v replies, %v general comments", labelStyle.Render("Feedback           "), feedback["unresolved_threads"], feedback["resolved_threads"], feedback["replies"], feedback["general_comments"]),
-		fmt.Sprintf("%s  %v", labelStyle.Render("Older diff comments"), feedback["older_diff_comments"]),
+		fmt.Sprintf("%s  %d unresolved, %d resolved, %d replies, %d general comments", labelStyle.Render("Feedback           "), feedback.UnresolvedThreads, feedback.ResolvedThreads, feedback.Replies, feedback.GeneralComments),
+		fmt.Sprintf("%s  %d", labelStyle.Render("Older diff comments"), feedback.OlderDiffComments),
 	}
 	if mergeStatus := renderMergeStatus(revision, true); mergeStatus != "" {
 		lines = append(lines, fmt.Sprintf("%s  %s", labelStyle.Render("Merge              "), mergeStatus))
 	}
-	if revision["uri"] != nil {
-		lines = append(lines, fmt.Sprintf("%s  %s", labelStyle.Render("URL                "), linkStyle.Render(safe(revision["uri"]))))
+	if revision.URI != nil {
+		lines = append(lines, fmt.Sprintf("%s  %s", labelStyle.Render("URL                "), linkStyle.Render(safe(revision.URI))))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func renderThreads(result map[string]any) string {
-	lines := []string{headerStyle.Render(fmt.Sprintf("D%v: %v %s threads", result["revision_id"], result["count"], safe(result["state"])))}
-	threads, _ := sliceValue(result["threads"])
-	for index, raw := range threads {
+func renderThreads(result threadsResult) string {
+	lines := []string{headerStyle.Render(fmt.Sprintf("D%d: %d %s threads", result.RevisionID, result.Count, safe(result.State)))}
+	for index, item := range result.Threads {
 		if index > 0 {
 			lines = append(lines, "")
 		}
-		thread, _ := mapValue(raw)
-		root, _ := mapValue(thread["root"])
 		state := "unresolved"
-		if boolValue(thread["resolved"]) {
+		if item.Resolved {
 			state = "resolved"
 		}
-		lines = append(lines, fmt.Sprintf("%s  %s  %s", decisionStyle(state).Render(state), idStyle.Render(fmt.Sprintf("#%v", root["id"])), detailStyle.Render(location(root))))
-		lines = append(lines, "  "+safe(orDefault(root["content"], "")))
-		replies, _ := sliceValue(thread["replies"])
-		for _, rawReply := range replies {
-			reply, _ := mapValue(rawReply)
-			lines = append(lines, fmt.Sprintf("  %s %s to %s: %s", labelStyle.Render("Reply"), idStyle.Render(fmt.Sprintf("#%v", reply["id"])), idStyle.Render(fmt.Sprintf("#%v", reply["reply_to_comment_id"])), safe(orDefault(reply["content"], ""))))
+		lines = append(lines, fmt.Sprintf("%s  %s  %s", decisionStyle(state).Render(state), idStyle.Render(fmt.Sprintf("#%v", item.Root.ID)), detailStyle.Render(location(item.Root))))
+		lines = append(lines, "  "+safe(orDefault(item.Root.Content, "")))
+		for _, reply := range item.Replies {
+			lines = append(lines, fmt.Sprintf("  %s %s to %s: %s", labelStyle.Render("Reply"), idStyle.Render(fmt.Sprintf("#%v", reply.ID)), idStyle.Render(fmt.Sprintf("#%v", reply.ReplyToCommentID)), safe(orDefault(reply.Content, ""))))
 		}
 	}
-	orphans, _ := sliceValue(result["orphan_replies"])
-	for _, raw := range orphans {
-		orphan, _ := mapValue(raw)
-		parent := orphan["reply_to_comment_id"]
+	for _, orphan := range result.OrphanReplies {
+		parent := orphan.ReplyToCommentID
 		if parent == nil {
-			parent = orphan["reply_to_comment_phid"]
+			parent = orphan.ReplyToCommentPHID
 		}
-		lines = append(lines, "", fmt.Sprintf("%s  %s -> %s", decisionStyle("orphan").Render("orphan reply"), idStyle.Render(fmt.Sprintf("#%v", orphan["id"])), safe(parent)))
-		lines = append(lines, "  "+safe(orDefault(orphan["content"], "")))
+		lines = append(lines, "", fmt.Sprintf("%s  %s -> %s", decisionStyle("orphan").Render("orphan reply"), idStyle.Render(fmt.Sprintf("#%v", orphan.ID)), safe(parent)))
+		lines = append(lines, "  "+safe(orDefault(orphan.Content, "")))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func renderTimeline(result map[string]any) string {
-	events, _ := sliceValue(result["events"])
-	lines := []string{headerStyle.Render(fmt.Sprintf("D%v: %d feedback events", result["revision_id"], len(events)))}
-	for _, raw := range events {
-		event, _ := mapValue(raw)
+func renderTimeline(result timelineResult) string {
+	lines := []string{headerStyle.Render(fmt.Sprintf("D%d: %d feedback events", result.RevisionID, len(result.Events)))}
+	for _, event := range result.Events {
 		locationText := ""
-		if stringValue(event["kind"]) == "inline" {
+		if event.Kind == "inline" {
 			locationText = "  " + detailStyle.Render(location(event))
 		}
-		kind := safe(event["kind"])
-		lines = append(lines, fmt.Sprintf("%s  %s%s  %s", decisionStyle(kind).Render(kind), idStyle.Render(fmt.Sprintf("#%v", event["id"])), locationText, safe(orDefault(event["content"], ""))))
+		kind := safe(event.Kind)
+		lines = append(lines, fmt.Sprintf("%s  %s%s  %s", decisionStyle(kind).Render(kind), idStyle.Render(fmt.Sprintf("#%v", event.ID)), locationText, safe(orDefault(event.Content, ""))))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func statusStyle(status map[string]any) lipgloss.Style {
-	value := strings.ToLower(stringValue(status["value"]))
+func statusStyle(status revisionStatus) lipgloss.Style {
+	value := strings.ToLower(stringValue(status.Value))
 	if value == "" {
-		value = strings.ToLower(stringValue(status["name"]))
+		value = strings.ToLower(stringValue(status.Name))
 	}
 	return decisionStyle(value)
 }
@@ -255,13 +258,13 @@ func decisionText(value string) string {
 	return value
 }
 
-func renderMergeStatus(revision map[string]any, includeClean bool) string {
-	merge, ok := mapValue(revision["merge_conflict_status"])
-	if !ok {
+func renderMergeStatus(revision revisionRecord, includeClean bool) string {
+	merge := revision.MergeConflictStatus
+	if merge == nil {
 		return ""
 	}
-	status := strings.ToLower(stringValue(merge["status"]))
-	if boolValue(merge["is_stale"]) {
+	status := strings.ToLower(stringValue(merge.Status))
+	if boolValue(merge.IsStale) {
 		return decisionStyle("recomputing").Render("Recomputing")
 	}
 	if status == "clean" && !includeClean {
@@ -277,40 +280,51 @@ func renderMergeStatus(revision map[string]any, includeClean bool) string {
 	default:
 		label = decisionStyle("unknown").Render("Unknown")
 	}
-	if reason := stringValue(merge["reason"]); reason != "" {
+	if reason := stringValue(merge.Reason); reason != "" {
 		label += detailStyle.Render(" - " + safe(reason))
 	}
 	return label
 }
 
-func statusText(status map[string]any) string {
-	if status == nil {
-		return "unknown"
+func statusText(status revisionStatus) string {
+	if stringValue(status.Name) != "" {
+		return safe(status.Name)
 	}
-	if stringValue(status["name"]) != "" {
-		return safe(status["name"])
-	}
-	return safe(orDefault(status["value"], "unknown"))
+	return safe(orDefault(status.Value, "unknown"))
 }
 
-func name(handle map[string]any) string {
+func name(handle *handleInfo) string {
 	if handle == nil {
 		return "unknown"
 	}
-	for _, key := range []string{"full_name", "name", "phid"} {
-		if stringValue(handle[key]) != "" {
-			return safe(handle[key])
+	for _, value := range []any{handle.FullName, handle.Name, handle.PHID} {
+		if stringValue(value) != "" {
+			return safe(value)
 		}
 	}
 	return "unknown"
 }
 
-func location(comment map[string]any) string {
-	path := safe(orDefault(comment["path"], "(unknown path)"))
-	if comment["line"] == nil {
+func location(comment feedbackEvent) string {
+	path := safe(orDefault(comment.Path, "(unknown path)"))
+	if comment.Line == nil {
 		return path
 	}
-	return fmt.Sprintf("%s:%v", path, comment["line"])
+	return fmt.Sprintf("%s:%v", path, comment.Line)
+}
+
+func renderDoctor(result doctorResult) string {
+	lines := []string{headerStyle.Render("Diagnostics for " + result.Host)}
+	for _, check := range result.Checks {
+		style := successStyle
+		if check.Status == "warning" {
+			style = decisionStyle("unknown")
+		} else if check.Status != "ok" {
+			style = decisionStyle("unresolved")
+		}
+		lines = append(lines, fmt.Sprintf("%s  %s", style.Render(check.Name), check.Message))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func safe(value any) string {

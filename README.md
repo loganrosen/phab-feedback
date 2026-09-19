@@ -41,6 +41,7 @@ and inspect review work:
 
 ```bash
 phab-feedback list --role reviewing
+phab-feedback doctor
 phab-feedback D123
 phab-feedback D123 --threads=all
 phab-feedback D123 --timeline
@@ -91,6 +92,14 @@ Credential requirements vary by command:
 | `submit` | No | Required |
 | `rate` (Mozilla only) | Required | Required |
 | `ai-review` (Mozilla only) | No | Required |
+
+Run `phab-feedback doctor` to check host resolution, Conduit authentication,
+the browser session and CSRF token, and whether Review Helper is visible on the
+host homepage. The command only performs read-only requests and supports
+`--format json` for automated diagnostics. Missing optional browser credentials
+are reported as warnings; invalid configured credentials fail the command.
+Review Helper detection is best-effort because not every installation links it
+from the host homepage.
 
 The mutation commands that require both use Conduit to validate IDs and the web
 session to perform the browser-only action. `XDG_CONFIG_HOME` and
@@ -177,6 +186,7 @@ For structured output:
 
 ```bash
 phab-feedback list --role reviewing --format json
+phab-feedback doctor --format json
 phab-feedback D123 --format json
 phab-feedback D123 --threads=all --format json
 phab-feedback D123 --timeline --format json
@@ -227,6 +237,8 @@ or `go run` as a non-persistent fallback.
 
 - If multiple `.arcrc` hosts exist, select one explicitly, for example
   `phab-feedback --host https://phabricator.example.com D123 --timeline`.
+- Run `phab-feedback doctor` to identify whether a failure is in host
+  configuration, Conduit authentication, or the browser session.
 - If a web command reports that it needs a session, set
   `PHAB_FEEDBACK_SESSION_COOKIE` or use a logged-in Firefox profile with
   `--firefox-cookies`.
