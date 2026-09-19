@@ -29,15 +29,15 @@ Run every example below through `"${PHAB_FEEDBACK[@]}"`.
 
 ## Inspect before acting
 
-Use `list` to discover work and `show` to assess a revision:
+Use `list` to discover work and the revision-first overview to assess it:
 
 ```bash
 "${PHAB_FEEDBACK[@]}" list --role reviewing --format json
-"${PHAB_FEEDBACK[@]}" show D123 --format json
+"${PHAB_FEEDBACK[@]}" D123 --format json
 ```
 
-Run `threads D123 --state all --format json` for grouped conversations or
-`timeline D123 --format json` for the complete chronology before classifying
+Run `D123 --threads=all --format json` for grouped conversations or
+`D123 --timeline --format json` for the complete chronology before classifying
 feedback or choosing a mutation. The CLI defaults to human-readable text, so
 agents should request JSON whenever they need fields or IDs. Take comment IDs
 only from their `id` fields. Never infer them from ordering, URLs, transaction
@@ -51,15 +51,15 @@ draft creation and submission as separate mutations requiring separate
 approval. Prefer message files or stdin:
 
 ```bash
-"${PHAB_FEEDBACK[@]}" comment D123 --message-file reply.txt
-"${PHAB_FEEDBACK[@]}" reply-inline D123 456 --message-file - < reply.txt
+"${PHAB_FEEDBACK[@]}" D123 comment --message-file reply.txt
+"${PHAB_FEEDBACK[@]}" D123 reply 456 --message-file - < reply.txt
 ```
 
 - Treat `comment` as an immediate top-level post.
 - Treat `remove-comment` as an immediate removal after type validation.
-- Treat `reply-inline` and `mark-done` as draft creation.
-- Run `submit D123` only after separate approval to publish all pending drafts.
-- Use `reply-inline ... --submit` only when combined creation and publication
+- Treat `reply` and `done` as draft creation.
+- Run `D123 submit` only after separate approval to publish all pending drafts.
+- Use `D123 reply ... --submit` only when combined creation and publication
   were explicitly approved.
 - Use `remove-comment` only for an accidental top-level comment.
 
@@ -67,13 +67,13 @@ Never combine reply, Done, removal, or submission actions implicitly.
 
 ## Isolate Mozilla-only actions
 
-Treat `mark-helpful`, `mark-unhelpful`, and `request-ai-review` as Mozilla
-Review Helper commands. Ratings and AI review requests take effect immediately.
-Request AI review only after the relevant changes are published and the user
-selected that reviewer.
+Treat `rate --helpful`, `rate --unhelpful`, and `ai-review` as Mozilla Review
+Helper actions. Ratings and AI review requests take effect immediately. Request
+AI review only after the relevant changes are published and the user selected
+that reviewer.
 
 ## Verify published replies
 
-After submission, run `timeline` and confirm each reply's
+After submission, run `D123 --timeline` and confirm each reply's
 `reply_to_comment_id` matches the approved parent. Do not mark the parent Done
 without separate approval.

@@ -442,7 +442,28 @@ func normalizeRevision(revision map[string]any, handles map[string]map[string]an
 		"created":           timestampValue(fields["dateCreated"]),
 		"modified":          timestampValue(fields["dateModified"]),
 		"current_diff_phid": fields["diffPHID"],
+		"merge_conflict_status": normalizeMergeConflictStatus(
+			fields["merge.conflict.status"],
+		),
 	}, nil
+}
+
+func normalizeMergeConflictStatus(value any) any {
+	status, ok := mapValue(value)
+	if !ok {
+		return nil
+	}
+	return map[string]any{
+		"status":                             status["status"],
+		"reason":                             status["reason"],
+		"is_stale":                           status["isStale"],
+		"checked_at":                         timestampValue(status["epoch"]),
+		"checked_against_commit":             status["checkedAgainstCommit"],
+		"checked_against_base_commit":        status["checkedAgainstBaseCommit"],
+		"checked_against_base_revision_phid": status["checkedAgainstBaseRevisionPHID"],
+		"checked_against_diff_id":            status["checkedAgainstDiffID"],
+		"checked_against_diff_phid":          status["checkedAgainstDiffPHID"],
+	}
 }
 
 func (s *feedbackService) postComment(revision, message string) (map[string]any, error) {

@@ -15,6 +15,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/spf13/cobra"
 )
 
 type recordedRequest struct {
@@ -164,7 +168,7 @@ func TestParseArgsAndMessageInputs(t *testing.T) {
 		}
 	}
 	var stdout, stderr bytes.Buffer
-	if status := Run([]string{"--help"}, strings.NewReader(""), &stdout, &stderr); status != 0 || !strings.Contains(stdout.String(), "Manage Phabricator") {
+	if status := Run([]string{"--help"}, strings.NewReader(""), &stdout, &stderr); status != 0 || !strings.Contains(stdout.String(), "pass a revision first") {
 		t.Fatalf("help status=%d stdout=%q stderr=%q", status, stdout.String(), stderr.String())
 	}
 	stdout.Reset()
@@ -333,8 +337,8 @@ func TestListFallbackHydrationAndTextEscaping(t *testing.T) {
 	if len(statuses) != 5 {
 		t.Fatalf("expected fallback statuses, got %#v", statuses)
 	}
-	text := revisionList(result)
-	if strings.ContainsAny(text, "\x1b\x07") || !strings.Contains(text, `unsafe\x1b]52;c;clipboard\x07\nnext`) {
+	text := ansi.Strip(revisionList(result))
+	if strings.ContainsRune(text, '\x07') || !strings.Contains(text, `unsafe\x1b]52;c;clipboard\x07\nnext`) {
 		t.Fatalf("unsafe text output: %q", text)
 	}
 }
@@ -411,13 +415,135 @@ func TestJSONOutputUsesStableIndentation(t *testing.T) {
 }
 
 func TestOutputFormatDefaultsToText(t *testing.T) {
-	root := newRootCommand(strings.NewReader(""), io.Discard, io.Discard)
+	root := newRootCommand(nil, strings.NewReader(""), io.Discard, io.Discard)
 	format, err := root.PersistentFlags().GetString("format")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if format != "text" {
 		t.Fatalf("default format = %q, want text", format)
+	}
+}
+
+func TestRevisionArgument(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "direct", args: []string{"D123", "--timeline"}, want: "D123"},
+		{name: "global flag", args: []string{"--format", "json", "D123"}, want: "D123"},
+		{name: "global flag assignment", args: []string{"--format=json", "123"}, want: "123"},
+		{name: "help", args: []string{"help", "D123"}, want: "D123"},
+		{name: "completion", args: []string{cobra.ShellCompRequestCmd, "D123"}, want: "D123"},
+		{name: "empty argument", args: []string{"", "D123"}, want: "D123"},
+		{name: "list", args: []string{"list", "--role", "reviewing"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := newRootCommand(nil, strings.NewReader(""), io.Discard, io.Discard)
+			if got := revisionArgument(root, test.args); got != test.want {
+				t.Fatalf("revision argument = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRevisionHelpShowsErgonomicSurface(t *testing.T) {
+	var output bytes.Buffer
+	root := newRootCommand([]string{"D123", "--help"}, strings.NewReader(""), &output, &output)
+	root.SetArgs([]string{"D123", "--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	for _, expected := range []string{"--threads", "--timeline", "Respond:", "reply", "done", "Mozilla Review Helper:", "rate", "ai-review"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("revision help missing %q:\n%s", expected, text)
+		}
+	}
+	for _, removed := range []string{"reply-inline", "mark-done", "request-ai-review"} {
+		if strings.Contains(text, removed) {
+			t.Fatalf("revision help contains removed command %q:\n%s", removed, text)
+		}
+	}
+}
+
+func TestRevisionListTextLayout(t *testing.T) {
+	got := ansi.Strip(revisionList(map[string]any{
+		"count":  1,
+		"role":   "responsible",
+		"status": "open",
+		"revisions": []any{map[string]any{
+			"id":     123,
+			"title":  "Improve command output",
+			"status": map[string]any{"value": "needs-review", "name": "Needs Review"},
+			"author": map[string]any{"full_name": "Logan Rosen"},
+			"reviewers": []any{map[string]any{
+				"full_name": "Reviewer", "status": "accepted",
+			}},
+			"modified": "2026-09-19T02:35:58+00:00",
+			"uri":      "https://phab.example/D123",
+			"merge_conflict_status": map[string]any{
+				"status": "conflict",
+				"reason": "The landing conflicts with the target branch.",
+			},
+		}},
+	}))
+	want := strings.Join([]string{
+		"1 revisions (responsible, open)",
+		"D123  Needs Review  Improve command output",
+		"  Author     Logan Rosen",
+		"  Reviewers  Reviewer accepted",
+		"  Merge      Merge conflict - The landing conflicts with the target branch.",
+		"  Updated    2026-09-19T02:35:58+00:00",
+		"  URL        https://phab.example/D123",
+	}, "\n")
+	if got != want {
+		t.Fatalf("text output:\n%s\n\nwant:\n%s", got, want)
+	}
+}
+
+func TestReviewerRejectedStatusUsesUILabel(t *testing.T) {
+	if got := decisionText("rejected"); got != "requested changes" {
+		t.Fatalf("decision text = %q, want requested changes", got)
+	}
+}
+
+func TestNormalizeRevisionMergeConflictStatus(t *testing.T) {
+	raw := revision(123)
+	fields, _ := mapValue(raw["fields"])
+	fields["merge.conflict.status"] = map[string]any{
+		"status":                         "conflict",
+		"reason":                         "Landing may fail.",
+		"isStale":                        false,
+		"epoch":                          1757000000,
+		"checkedAgainstCommit":           "target",
+		"checkedAgainstBaseCommit":       "base",
+		"checkedAgainstBaseRevisionPHID": nil,
+		"checkedAgainstDiffID":           456,
+		"checkedAgainstDiffPHID":         "PHID-DIFF-current",
+	}
+	normalized, err := normalizeRevision(raw, map[string]map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _ := mapValue(normalized["merge_conflict_status"])
+	if status["status"] != "conflict" || status["reason"] != "Landing may fail." {
+		t.Fatalf("unexpected merge conflict status: %#v", status)
+	}
+	if status["checked_at"] != "2025-09-04T15:33:20+00:00" {
+		t.Fatalf("checked_at = %#v", status["checked_at"])
+	}
+}
+
+func TestTextStylesAreStrippedForNonTerminalOutput(t *testing.T) {
+	var output bytes.Buffer
+	if _, err := lipgloss.Fprintln(&output, idStyle.Render("D123")); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "D123\n" {
+		t.Fatalf("non-terminal output = %q, want plain text", output.String())
 	}
 }
 
@@ -433,7 +559,7 @@ func TestMutationTextOutput(t *testing.T) {
 			want:    "Posted a comment on D12.",
 		},
 		{
-			command: "reply-inline",
+			command: "reply",
 			result: map[string]any{
 				"revision_id": 12, "parent_comment_id": 34, "draft_comment_id": 56,
 				"submission": map[string]any{"revision_id": 12},
@@ -441,7 +567,7 @@ func TestMutationTextOutput(t *testing.T) {
 			want: "Drafted inline reply #56 to comment #34 on D12.\nSubmitted pending drafts on D12.",
 		},
 		{
-			command: "mark-done",
+			command: "done",
 			result: map[string]any{
 				"revision_id": 12,
 				"comments": []any{
@@ -452,7 +578,7 @@ func TestMutationTextOutput(t *testing.T) {
 			want: "Marked #34, #35 Done as drafts on D12.",
 		},
 		{
-			command: "request-ai-review",
+			command: "ai-review",
 			result:  map[string]any{"revision_id": 12, "status": "already-in-progress"},
 			want:    "A Review Helper AI review is already in progress on D12.",
 		},
@@ -463,7 +589,7 @@ func TestMutationTextOutput(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got != test.want {
+			if ansi.Strip(got) != test.want {
 				t.Fatalf("text output = %q, want %q", got, test.want)
 			}
 		})
