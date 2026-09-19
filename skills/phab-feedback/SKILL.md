@@ -1,6 +1,6 @@
 ---
 name: phab-feedback
-description: Discover, inspect, and act on Phabricator or Phorge Differential feedback with the phab-feedback CLI. Use for reviewer or author revision queues, revision summaries, unresolved inline threads, chronological timelines, exact general or inline comment IDs, inline-thread reply drafts, accidental top-level comment removal, Done drafts, explicit draft submission, and Mozilla Review Helper ratings or AI review requests. Trigger when an agent needs deterministic review metadata, must classify feedback across diff versions, needs to triage review work, or is ready to perform a user-approved feedback mutation.
+description: Discover, inspect, verify, and act on Phabricator or Phorge Differential feedback with the phab-feedback CLI. Use for reviewer or author revision queues, revision summaries, unresolved inline threads, chronological timelines, exact general or inline comment IDs, inline-thread reply drafts, batch reply and Done manifests, accidental top-level comment removal, explicit draft submission, published-state verification, and Mozilla Review Helper ratings or AI review requests. Trigger when an agent needs deterministic review metadata, must classify feedback across diff versions, needs to triage review work, or is ready to perform a user-approved feedback mutation.
 ---
 
 # Phabricator feedback
@@ -61,9 +61,39 @@ approval. Prefer message files or stdin:
 - Run `D123 submit` only after separate approval to publish all pending drafts.
 - Use `D123 reply ... --submit` only when combined creation and publication
   were explicitly approved.
+- Use `D123 reply ... --done` only when the reply and Done action were both
+  explicitly approved. Add `--submit` only when publication was also approved.
+- Use `D123 done ... --submit` only when drafting the Done states and publishing
+  all pending drafts were both explicitly approved.
 - Use `remove-comment` only for an accidental top-level comment.
 
 Never combine reply, Done, removal, or submission actions implicitly.
+
+## Batch approved actions
+
+For several approved inline actions on one revision, write a JSON manifest with
+the exact revision, comment IDs, reply text, and optional `done: true` values:
+
+```json
+{
+  "revision": "D123",
+  "actions": [
+    {"comment_id": 456, "reply": "Updated as requested.", "done": true},
+    {"comment_id": 457, "done": true}
+  ]
+}
+```
+
+Validate it before acting:
+
+```bash
+"${PHAB_FEEDBACK[@]}" batch actions.json --dry-run --format json
+```
+
+Run without `--submit` to create drafts only. Add `--submit` only when one final
+publication of all pending drafts was explicitly approved. The CLI validates
+the complete manifest and all target comments before mutation, creates drafts
+in order, submits at most once, and reports unavoidable remote partial failures.
 
 ## Isolate Mozilla-only actions
 
@@ -74,6 +104,16 @@ that reviewer.
 
 ## Verify published replies
 
-After submission, run `D123 --timeline` and confirm each reply's
-`reply_to_comment_id` matches the approved parent. Do not mark the parent Done
+After submission, use `verify` with each expected reply-parent pair and Done
+state:
+
+```bash
+"${PHAB_FEEDBACK[@]}" D123 verify \
+  --reply 901:456 \
+  --done 456 \
+  --format json
+```
+
+The command exits nonzero if a published reply is missing, the direct parent
+does not match, or a requested comment is not Done. Do not mark the parent Done
 without separate approval.

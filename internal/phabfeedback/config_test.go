@@ -92,3 +92,44 @@ Locked=1
 		t.Fatalf("unexpected profile order: %#v", candidates)
 	}
 }
+
+func TestWebSessionAutomaticallyFallsBackToFirefox(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "Library", "Application Support", "Firefox")
+	profile := filepath.Join(root, "Profiles", "current.default-release")
+	if err := os.MkdirAll(profile, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "profiles.ini"), []byte(`[InstallABC]
+Default=Profiles/current.default-release
+Locked=1
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(profile, "cookies.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), "CREATE TABLE moz_cookies (name TEXT, value TEXT, host TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO moz_cookies VALUES ('phsid', 'discovered', '.phab.example')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("PHAB_FEEDBACK_HOST", "https://phab.example")
+	t.Setenv("PHAB_FEEDBACK_SESSION_COOKIE", "")
+	t.Setenv("PHAB_FEEDBACK_ARCRC", filepath.Join(home, "missing-arcrc"))
+
+	got, err := resolveCredentials(t.Context(), credentialOptions{requireCookie: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.cookie != "phsid=discovered" {
+		t.Fatalf("cookie = %q, want discovered Firefox cookie", got.cookie)
+	}
+}

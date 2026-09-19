@@ -49,7 +49,7 @@ func renderText(command string, result any) (string, error) {
 		return successStyle.Render(fmt.Sprintf("Removed comment #%d from D%d.", value.CommentID, value.RevisionID)), nil
 	case "done":
 		value, err := typedResult[commentActionResult](result, command)
-		return renderCommentAction(value, "Marked", "Done as drafts"), err
+		return renderDone(value), err
 	case "submit":
 		value, err := typedResult[submissionResult](result, command)
 		if err != nil {
@@ -68,6 +68,12 @@ func renderText(command string, result any) (string, error) {
 	case "doctor":
 		value, err := typedResult[doctorResult](result, command)
 		return renderDoctor(value), err
+	case "batch":
+		value, err := typedResult[batchResult](result, command)
+		return renderBatch(value), err
+	case "verify":
+		value, err := typedResult[verificationResult](result, command)
+		return renderVerification(value), err
 	default:
 		return "", fmt.Errorf("text output is not supported for %s", command)
 	}
@@ -87,16 +93,48 @@ func renderOverview(result overviewResult) string {
 }
 
 func renderInlineReply(result inlineReplyResult) string {
+	replyID := result.CreatedReplyID
+	if replyID == 0 {
+		replyID = result.DraftCommentID
+	}
+	if replyID == 0 {
+		return decisionStyle("unresolved").Render(fmt.Sprintf(
+			"Could not confirm reply creation for comment #%d on D%d.",
+			result.ParentCommentID, result.RevisionID,
+		))
+	}
+	if !result.Saved && !result.Draft && !result.Published {
+		return decisionStyle("unresolved").Render(fmt.Sprintf(
+			"Created inline reply #%d to comment #%d on D%d, but did not confirm its saved state.",
+			replyID, result.ParentCommentID, result.RevisionID,
+		))
+	}
+	state := "Drafted"
+	if result.Published {
+		state = "Published"
+	}
 	lines := []string{successStyle.Render(fmt.Sprintf(
-		"Drafted inline reply #%d to comment #%d on D%d.",
-		result.DraftCommentID,
-		result.ParentCommentID,
-		result.RevisionID,
+		"%s inline reply #%d to comment #%d on D%d.",
+		state, replyID, result.ParentCommentID, result.RevisionID,
 	))}
-	if result.Submission != nil {
+	if result.Done != nil {
+		lines = append(lines, successStyle.Render(fmt.Sprintf("Marked comment #%d Done.", result.ParentCommentID)))
+	}
+	if result.Submission != nil && result.Submission.Submitted {
 		lines = append(lines, successStyle.Render(fmt.Sprintf("Submitted pending drafts on D%d.", result.Submission.RevisionID)))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func renderDone(result commentActionResult) string {
+	if len(result.Comments) == 0 {
+		return decisionStyle("unresolved").Render(fmt.Sprintf("No Done changes were confirmed on D%d.", result.RevisionID))
+	}
+	outcome := "Done as drafts"
+	if result.Submission != nil && result.Submission.Submitted {
+		outcome = "Done and submitted pending drafts"
+	}
+	return renderCommentAction(result, "Marked", outcome)
 }
 
 func renderCommentAction(result commentActionResult, verb, outcome string) string {
@@ -325,6 +363,47 @@ func renderDoctor(result doctorResult) string {
 		lines = append(lines, fmt.Sprintf("%s  %s", style.Render(check.Name), check.Message))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func renderBatch(result batchResult) string {
+	switch result.State {
+	case "planned":
+		submission := "without submission"
+		if result.Submit {
+			submission = "with one final submission"
+		}
+		return fmt.Sprintf("Validated %d planned mutations on D%d %s.", len(result.Mutations), result.RevisionID, submission)
+	case "published":
+		return successStyle.Render(fmt.Sprintf("Published %d batch mutations on D%d with one submission.", len(result.Mutations), result.RevisionID))
+	case "partial", "failed":
+		return decisionStyle("unresolved").Render(fmt.Sprintf(
+			"Batch stopped at action %d (%s) after %d reported mutations on D%d.",
+			result.Failure.Index, result.Failure.Action, len(result.Mutations), result.RevisionID,
+		))
+	default:
+		return successStyle.Render(fmt.Sprintf("Created %d batch mutation drafts on D%d.", len(result.Mutations), result.RevisionID))
+	}
+}
+
+func renderVerification(result verificationResult) string {
+	if result.Verified {
+		return successStyle.Render(fmt.Sprintf(
+			"Verified %d replies and %d Done states on D%d.",
+			len(result.Replies), len(result.Done), result.RevisionID,
+		))
+	}
+	failed := 0
+	for _, reply := range result.Replies {
+		if !reply.Found || !reply.Linked {
+			failed++
+		}
+	}
+	for _, done := range result.Done {
+		if !done.Found || !done.FinalDone {
+			failed++
+		}
+	}
+	return decisionStyle("unresolved").Render(fmt.Sprintf("%d verification checks failed on D%d.", failed, result.RevisionID))
 }
 
 func safe(value any) string {

@@ -177,12 +177,15 @@ func resolveCookie(ctx context.Context, host string, config configFile, options 
 	if profile == "" {
 		profile = config.FirefoxProfile
 	}
-	useFirefox := options.firefoxCookies || config.FirefoxCookies
-	if useFirefox || profile != "" {
-		parsed, _ := url.Parse(host)
-		return discoverFirefoxCookie(ctx, parsed.Hostname(), cookieName, expandHome(profile, home), home)
+	parsed, _ := url.Parse(host)
+	cookie, err := discoverFirefoxCookie(ctx, parsed.Hostname(), cookieName, expandHome(profile, home), home)
+	if err == nil {
+		return cookie, nil
 	}
-	return "", fmt.Errorf("this command needs a web session; set PHAB_FEEDBACK_SESSION_COOKIE or pass --firefox-cookies")
+	if profile != "" || options.firefoxCookies || config.FirefoxCookies {
+		return "", err
+	}
+	return "", fmt.Errorf("this command needs a web session; automatic Firefox cookie discovery failed: %w; set PHAB_FEEDBACK_SESSION_COOKIE or select a profile with --firefox-profile", err)
 }
 
 func discoverFirefoxCookie(ctx context.Context, hostname, cookieName, profile, home string) (string, error) {

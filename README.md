@@ -71,16 +71,21 @@ Tokens are not accepted as command-line arguments.
 
 Browser-only actions also need a logged-in web session. Set
 `PHAB_FEEDBACK_SESSION_COOKIE` to either the configured session-cookie value or
-a complete `Cookie` header. To read it from a local Firefox profile instead,
-put `--firefox-cookies` before the command. Auto-discovery checks modern Firefox
-install defaults before legacy profile defaults and searches the discovered
-profiles for a matching host cookie, including cookies still in Firefox's live
-write-ahead log. Firefox can remain open during discovery; the database snapshot
-is retried if Firefox changes it while it is being copied.
-`--firefox-profile PATH` selects only that profile and implies cookie discovery:
+a complete `Cookie` header. When that variable is not set, the CLI automatically
+searches local Firefox profiles for a matching host session. Discovery checks
+modern Firefox install defaults before legacy profile defaults and includes
+cookies still in Firefox's live write-ahead log. Firefox can remain open during
+discovery; the database snapshot is retried if Firefox changes it while it is
+being copied.
+
+`--firefox-profile PATH` selects only that profile. `--firefox-cookies` keeps
+the explicit all-profile discovery mode for scripts and diagnostics. Explicit
+session-cookie environment values take precedence over explicit profile
+selection, which takes precedence over automatic discovery:
 
 ```bash
-phab-feedback --firefox-cookies D123 submit
+phab-feedback D123 submit
+phab-feedback --firefox-profile ~/.mozilla/firefox/example.default-release D123 submit
 ```
 
 Credential requirements vary by command:
@@ -88,8 +93,10 @@ Credential requirements vary by command:
 | Actions | Conduit token | Web session |
 | --- | --- | --- |
 | Queue listing, revision overview, `--threads`, `--timeline`, `comment` | Required | No |
-| `reply`, `remove-comment`, `done` | Required | Required |
+| `reply`, `remove-comment`, `done`, `batch` mutations | Required | Required |
+| `batch --dry-run` | Required | No |
 | `submit` | No | Required |
+| `verify` | Required | No |
 | `rate` (Mozilla only) | Required | Required |
 | `ai-review` (Mozilla only) | No | Required |
 
@@ -154,8 +161,14 @@ phab-feedback D123 reply 456 --message-file - < reply.txt
 # Create Done drafts from timeline inline-comment IDs.
 phab-feedback D123 done 456 457
 
+# Create Done drafts and explicitly publish pending drafts once.
+phab-feedback D123 done 456 457 --submit
+
 # Publish all pending replies and Done changes in a separate action.
 phab-feedback D123 submit
+
+# Verify that a published reply has the expected parent and that comments are Done.
+phab-feedback D123 verify --reply 901:456 --done 456 --done 457
 
 # Remove an accidental top-level comment after the CLI validates its type.
 phab-feedback D123 remove-comment 789
@@ -191,15 +204,80 @@ phab-feedback D123 --format json
 phab-feedback D123 --threads=all --format json
 phab-feedback D123 --timeline --format json
 phab-feedback D123 done 456 457 --format json
+phab-feedback D123 verify --reply 901:456 --done 456 --format json
 ```
 
 `comment` and `remove-comment` take effect immediately. `reply` and `done` only
 create drafts. `submit` publishes pending draft actions and comments. The
-combined form is available only when immediate publication is intentional:
+combined forms are available only when immediate publication is intentional:
 
 ```bash
 phab-feedback D123 reply 456 --message-file reply.txt --submit
+phab-feedback D123 reply 456 --message-file reply.txt --done --submit
+phab-feedback D123 done 456 457 --submit
 ```
+
+`reply --done` always creates and saves the reply draft before attempting the
+Done draft. With `--submit`, the CLI submits once only after both draft
+operations succeed. Phabricator's internal web endpoints do not provide a
+server-side transaction spanning inline draft creation, Done state, and
+submission. If a later remote request fails, the command exits nonzero and its
+text or JSON output identifies any earlier mutation that may remain on the
+server.
+
+Mutation JSON includes the revision and action plus operation-specific fields
+such as `created_reply_id`, `parent_comment_id`, `draft`, `published`, and
+`final_done`. The `verify` command exits nonzero when a requested reply is
+missing, its direct parent does not match, or a requested comment is not Done.
+
+### Batch action manifests
+
+Use `batch` to validate and execute an ordered set of inline replies and Done
+changes. The manifest contains the revision and one entry per target comment:
+
+```json
+{
+  "revision": "D307925",
+  "actions": [
+    {
+      "comment_id": 123456,
+      "reply": "Updated this to preserve the existing behavior.",
+      "done": true
+    },
+    {
+      "comment_id": 123457,
+      "reply": "Added the requested test."
+    },
+    {
+      "comment_id": 123458,
+      "done": true
+    }
+  ]
+}
+```
+
+Unknown fields, duplicate targets, empty replies, unsupported `done: false`
+values, missing comments, removed comments, and non-inline targets are rejected
+before any mutation. Preview the complete plan first:
+
+```bash
+phab-feedback batch actions.json --dry-run
+```
+
+Without `--submit`, the command creates drafts in manifest order. With
+`--submit`, it creates every draft first and makes exactly one submission after
+all draft operations succeed:
+
+```bash
+phab-feedback batch actions.json
+phab-feedback batch actions.json --submit --format json
+```
+
+Validation failures never mutate the revision. True server-side atomicity is
+not available for these internal endpoints, so a network or server failure can
+leave earlier drafts behind. In that case the command exits nonzero and reports
+`state: "partial"`, completed mutations, and the failed action; it never submits
+after a draft operation fails.
 
 Queue listing, revision inspection, and `comment` use standard Conduit APIs.
 Inline reply drafting, top-level comment removal, Done drafting, and draft

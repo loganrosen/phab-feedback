@@ -117,7 +117,7 @@ func TestMarkDoneRetriesUncheckedResponse(t *testing.T) {
 		response(map[string]any{"payload": map[string]any{"isChecked": false}}),
 		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
 	)
-	result, err := service.markDone("D1", []string{"20"})
+	result, err := service.markDone("D1", []string{"20"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

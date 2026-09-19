@@ -211,8 +211,9 @@ func TestMutationTextOutput(t *testing.T) {
 		{
 			command: "reply",
 			result: inlineReplyResult{
-				RevisionID: 12, ParentCommentID: 34, DraftCommentID: 56,
-				Submission: &submissionResult{RevisionID: 12},
+				RevisionID: 12, ParentCommentID: 34, DraftCommentID: 56, CreatedReplyID: 56,
+				Saved:      true,
+				Submission: &submissionResult{RevisionID: 12, Submitted: true},
 			},
 			want: "Drafted inline reply #56 to comment #34 on D12.\nSubmitted pending drafts on D12.",
 		},
@@ -243,5 +244,30 @@ func TestMutationTextOutput(t *testing.T) {
 				t.Fatalf("text output = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestBatchAndMutationHelpExposeExplicitPublicationFlags(t *testing.T) {
+	tests := []struct {
+		args []string
+		want []string
+	}{
+		{args: []string{"batch", "--help"}, want: []string{"MANIFEST", "--dry-run", "--submit"}},
+		{args: []string{"D123", "reply", "--help"}, want: []string{"--done", "--submit"}},
+		{args: []string{"D123", "done", "--help"}, want: []string{"--submit"}},
+		{args: []string{"D123", "verify", "--help"}, want: []string{"REPLY_ID:PARENT_ID", "--done"}},
+	}
+	for _, test := range tests {
+		var output bytes.Buffer
+		root := newRootCommand(test.args, strings.NewReader(""), &output, &output)
+		root.SetArgs(test.args)
+		if err := root.Execute(); err != nil {
+			t.Fatalf("%v: %v", test.args, err)
+		}
+		for _, expected := range test.want {
+			if !strings.Contains(output.String(), expected) {
+				t.Fatalf("%v help missing %q:\n%s", test.args, expected, output.String())
+			}
+		}
 	}
 }
