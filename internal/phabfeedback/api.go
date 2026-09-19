@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -60,13 +61,13 @@ func (c *conduitClient) call(method string, params map[string]any, result any) e
 			info = "request rejected"
 		}
 		info = strings.ReplaceAll(info, c.token, "[redacted]")
-		return fmt.Errorf("Conduit %s failed: %s: %s", method, *envelope.ErrorCode, info)
+		return fmt.Errorf("the Conduit method %s failed: %s: %s", method, *envelope.ErrorCode, info)
 	}
 	if len(envelope.Result) == 0 {
-		return fmt.Errorf("Conduit %s returned no result", method)
+		return fmt.Errorf("the Conduit method %s returned no result", method)
 	}
 	if err := decodeJSON(envelope.Result, "Conduit "+method+" result", result); err != nil {
-		return fmt.Errorf("Conduit %s returned invalid result data", method)
+		return fmt.Errorf("the Conduit method %s returned invalid result data", method)
 	}
 	return nil
 }
@@ -159,7 +160,7 @@ func (w *webClient) csrf() (string, error) {
 			return w.csrfToken, nil
 		}
 	}
-	return "", fmt.Errorf("Could not extract a CSRF token from the host")
+	return "", fmt.Errorf("could not extract a CSRF token from the host")
 }
 
 func (w *webClient) post(path string, values map[string]string) (map[string]any, error) {
@@ -190,7 +191,7 @@ func (w *webClient) post(path string, values map[string]string) (map[string]any,
 		return nil, err
 	}
 	if apiError := stringValue(payload["error"]); apiError != "" {
-		return nil, fmt.Errorf("Web endpoint %s failed: %s", path, apiError)
+		return nil, fmt.Errorf("web endpoint %s failed: %s", path, apiError)
 	}
 	return payload, nil
 }
@@ -221,8 +222,6 @@ func decodeJSON(body []byte, operation string, target any) error {
 
 func cloneMap(source map[string]any) map[string]any {
 	result := make(map[string]any, len(source)+1)
-	for key, value := range source {
-		result[key] = value
-	}
+	maps.Copy(result, source)
 	return result
 }

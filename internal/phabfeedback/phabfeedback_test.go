@@ -2,9 +2,11 @@ package phabfeedback
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -35,6 +37,12 @@ type fakeTransport struct {
 	requests  []recordedRequest
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
 func (f *fakeTransport) Request(method, target string, headers http.Header, data io.Reader) ([]byte, error) {
 	var body []byte
 	if data != nil {
@@ -49,7 +57,11 @@ func (f *fakeTransport) Request(method, target string, headers http.Header, data
 	if err, ok := response.(error); ok {
 		return nil, err
 	}
-	return response.([]byte), nil
+	responseBody, ok := response.([]byte)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response type %T", response)
+	}
+	return responseBody, nil
 }
 
 func response(payload any) []byte {
@@ -57,7 +69,11 @@ func response(payload any) []byte {
 	if raw, ok := payload.([]byte); ok {
 		body = raw
 	} else {
-		body, _ = json.Marshal(payload)
+		var err error
+		body, err = json.Marshal(payload)
+		if err != nil {
+			panic(fmt.Sprintf("marshal test response: %v", err))
+		}
 	}
 	return body
 }
@@ -100,6 +116,28 @@ func serviceWith(responses ...any) (*feedbackService, *fakeTransport) {
 		conduit: &conduitClient{host: "https://phab.example", token: "token", transport: transport},
 		web:     &webClient{host: "https://phab.example", cookie: "phsid=cookie", transport: transport},
 	}, transport
+}
+
+func TestHTTPTransportPropagatesContext(t *testing.T) {
+	type contextKey struct{}
+	ctx := context.WithValue(t.Context(), contextKey{}, "expected")
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if value := request.Context().Value(contextKey{}); value != "expected" {
+			t.Fatalf("unexpected request context value: %v", value)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("ok")),
+		}, nil
+	})}
+	body, err := (httpTransport{client: client}).Request(ctx, http.MethodGet, "https://phab.example", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("unexpected response: %q", body)
+	}
 }
 
 func TestParseArgsAndMessageInputs(t *testing.T) {
@@ -146,7 +184,7 @@ func TestNormalizeHostAndCredentialPrecedence(t *testing.T) {
 	t.Setenv("PHAB_FEEDBACK_HOST", "https://env.example")
 	t.Setenv("PHAB_FEEDBACK_TOKEN", "secret-token")
 	t.Setenv("PHAB_FEEDBACK_SESSION_COOKIE", "base64==")
-	got, err := resolveCredentials(credentialOptions{requireToken: true, requireCookie: true})
+	got, err := resolveCredentials(t.Context(), credentialOptions{requireToken: true, requireCookie: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +200,11 @@ func TestFirefoxCookieDiscoveryReadsWAL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close database: %v", err)
+		}
+	})
 	for _, statement := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA wal_autocheckpoint=0",
@@ -170,11 +212,11 @@ func TestFirefoxCookieDiscoveryReadsWAL(t *testing.T) {
 		"PRAGMA wal_checkpoint(TRUNCATE)",
 		"INSERT INTO moz_cookies VALUES ('phsid', 'right', '.phab.example'), ('phusr', 'logan', '.phab.example')",
 	} {
-		if _, err := db.Exec(statement); err != nil {
+		if _, err := db.ExecContext(t.Context(), statement); err != nil {
 			t.Fatalf("%s: %v", statement, err)
 		}
 	}
-	got, err := discoverFirefoxCookie("phab.example", "phsid", profile, profile)
+	got, err := discoverFirefoxCookie(t.Context(), "phab.example", "phsid", profile, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,10 +230,10 @@ func TestFirefoxInstallDefaultPrecedesProfileDefault(t *testing.T) {
 	root := filepath.Join(home, "Library", "Application Support", "Firefox")
 	legacy := filepath.Join(root, "Profiles", "legacy.default")
 	current := filepath.Join(root, "Profiles", "current.default-release")
-	if err := os.MkdirAll(legacy, 0o755); err != nil {
+	if err := os.MkdirAll(legacy, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(current, 0o755); err != nil {
+	if err := os.MkdirAll(current, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	profilesINI := `[Profile0]

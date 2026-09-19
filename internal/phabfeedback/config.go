@@ -2,6 +2,7 @@ package phabfeedback
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -45,10 +46,10 @@ type arcHost struct {
 	Token string `json:"token"`
 }
 
-func resolveCredentials(options credentialOptions) (credentials, error) {
+func resolveCredentials(ctx context.Context, options credentialOptions) (credentials, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return credentials{}, fmt.Errorf("Could not determine home directory")
+		return credentials{}, fmt.Errorf("could not determine home directory")
 	}
 	config, err := readConfig(options.configPath, home)
 	if err != nil {
@@ -70,7 +71,7 @@ func resolveCredentials(options credentialOptions) (credentials, error) {
 		}
 	}
 	if options.requireCookie {
-		result.cookie, err = resolveCookie(host, config, options, home)
+		result.cookie, err = resolveCookie(ctx, host, config, options, home)
 		if err != nil {
 			return credentials{}, err
 		}
@@ -87,6 +88,7 @@ func readConfig(path, home string) (configFile, error) {
 	return readJSONFile[configFile](expandHome(path, home), !explicit, "config file")
 }
 
+//nolint:gosec // Configuration paths are intentionally user-selectable.
 func readJSONFile[T any](path string, missingOK bool, label string) (T, error) {
 	var zero T
 	data, err := os.ReadFile(path)
@@ -95,13 +97,13 @@ func readJSONFile[T any](path string, missingOK bool, label string) (T, error) {
 	}
 	if err != nil {
 		if os.IsNotExist(err) {
-			return zero, fmt.Errorf("Config file not found: %s", path)
+			return zero, fmt.Errorf("config file not found: %s", path)
 		}
-		return zero, fmt.Errorf("Could not read %s: %s", label, path)
+		return zero, fmt.Errorf("could not read %s: %s", label, path)
 	}
 	var payload T
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return zero, fmt.Errorf("Could not read %s: %s", label, path)
+		return zero, fmt.Errorf("could not read %s: %s", label, path)
 	}
 	return payload, nil
 }
@@ -126,9 +128,9 @@ func resolveHost(cliHost string, config configFile, arcrc arcConfig) (string, er
 		return normalizeHost(available[0])
 	}
 	if len(available) == 0 {
-		return "", fmt.Errorf("No Phabricator host configured; use --host, PHAB_FEEDBACK_HOST, or the config file")
+		return "", fmt.Errorf("no Phabricator host configured; use --host, PHAB_FEEDBACK_HOST, or the config file")
 	}
-	return "", fmt.Errorf("Multiple .arcrc hosts found; select one with --host or PHAB_FEEDBACK_HOST")
+	return "", fmt.Errorf("multiple .arcrc hosts found; select one with --host or PHAB_FEEDBACK_HOST")
 }
 
 func normalizeHost(host string) (string, error) {
@@ -136,10 +138,10 @@ func normalizeHost(host string) (string, error) {
 	value = strings.TrimSuffix(value, "/api")
 	parsed, err := url.Parse(value)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return "", fmt.Errorf("Phabricator host must be an absolute http(s) URL")
+		return "", fmt.Errorf("the Phabricator host must be an absolute http(s) URL")
 	}
 	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", fmt.Errorf("Phabricator host must not contain credentials, a query, or a fragment")
+		return "", fmt.Errorf("the Phabricator host must not contain credentials, a query, or a fragment")
 	}
 	return parsed.Scheme + "://" + parsed.Host + strings.TrimSuffix(parsed.Path, "/"), nil
 }
@@ -157,10 +159,10 @@ func resolveToken(host string, arcrc arcConfig) (string, error) {
 			return settings.Token, nil
 		}
 	}
-	return "", fmt.Errorf("No Conduit token found for %s; configure .arcrc or PHAB_FEEDBACK_TOKEN", host)
+	return "", fmt.Errorf("no Conduit token found for %s; configure .arcrc or PHAB_FEEDBACK_TOKEN", host)
 }
 
-func resolveCookie(host string, config configFile, options credentialOptions, home string) (string, error) {
+func resolveCookie(ctx context.Context, host string, config configFile, options credentialOptions, home string) (string, error) {
 	cookieName := "phsid"
 	if config.CookieName != "" {
 		cookieName = config.CookieName
@@ -178,29 +180,29 @@ func resolveCookie(host string, config configFile, options credentialOptions, ho
 	useFirefox := options.firefoxCookies || config.FirefoxCookies
 	if useFirefox || profile != "" {
 		parsed, _ := url.Parse(host)
-		return discoverFirefoxCookie(parsed.Hostname(), cookieName, expandHome(profile, home), home)
+		return discoverFirefoxCookie(ctx, parsed.Hostname(), cookieName, expandHome(profile, home), home)
 	}
-	return "", fmt.Errorf("This command needs a web session; set PHAB_FEEDBACK_SESSION_COOKIE or pass --firefox-cookies")
+	return "", fmt.Errorf("this command needs a web session; set PHAB_FEEDBACK_SESSION_COOKIE or pass --firefox-cookies")
 }
 
-func discoverFirefoxCookie(hostname, cookieName, profile, home string) (string, error) {
+func discoverFirefoxCookie(ctx context.Context, hostname, cookieName, profile, home string) (string, error) {
 	if profile != "" {
 		database := filepath.Join(profile, "cookies.sqlite")
 		if _, err := os.Stat(database); err != nil {
-			return "", fmt.Errorf("Firefox cookie database not found: %s", database)
+			return "", fmt.Errorf("the Firefox cookie database was not found: %s", database)
 		}
-		cookie, err := readFirefoxCookie(database, hostname, cookieName)
+		cookie, err := readFirefoxCookie(ctx, database, hostname, cookieName)
 		if err != nil {
 			return "", err
 		}
 		if cookie == "" {
-			return "", fmt.Errorf("No %s Firefox cookie found for %s", cookieName, hostname)
+			return "", fmt.Errorf("no %s Firefox cookie found for %s", cookieName, hostname)
 		}
 		return cookie, nil
 	}
 	profiles := firefoxProfileCandidates(home)
 	if len(profiles) == 0 {
-		return "", fmt.Errorf("No Firefox profile found")
+		return "", fmt.Errorf("no Firefox profile found")
 	}
 	readable, readError := false, false
 	for _, candidate := range profiles {
@@ -208,7 +210,7 @@ func discoverFirefoxCookie(hostname, cookieName, profile, home string) (string, 
 		if _, err := os.Stat(database); err != nil {
 			continue
 		}
-		cookie, err := readFirefoxCookie(database, hostname, cookieName)
+		cookie, err := readFirefoxCookie(ctx, database, hostname, cookieName)
 		if err != nil {
 			readError = true
 			continue
@@ -219,47 +221,48 @@ func discoverFirefoxCookie(hostname, cookieName, profile, home string) (string, 
 		}
 	}
 	if readable {
-		return "", fmt.Errorf("No %s Firefox cookie found for %s in discovered profiles", cookieName, hostname)
+		return "", fmt.Errorf("no %s Firefox cookie found for %s in discovered profiles", cookieName, hostname)
 	}
 	if readError {
-		return "", fmt.Errorf("Could not read any Firefox cookie database")
+		return "", fmt.Errorf("could not read any Firefox cookie database")
 	}
-	return "", fmt.Errorf("No Firefox cookie database found in discovered profiles")
+	return "", fmt.Errorf("no Firefox cookie database found in discovered profiles")
 }
 
-func readFirefoxCookie(database, hostname, cookieName string) (string, error) {
+func readFirefoxCookie(ctx context.Context, database, hostname, cookieName string) (string, error) {
 	directory, err := os.MkdirTemp("", "phab-feedback-cookies-*")
 	if err != nil {
-		return "", fmt.Errorf("Could not read Firefox cookie database")
+		return "", fmt.Errorf("could not read Firefox cookie database")
 	}
-	defer os.RemoveAll(directory)
+	defer func() { _ = os.RemoveAll(directory) }()
 	copyPath, err := snapshotFirefoxDatabase(database, directory)
 	if err != nil {
 		return "", err
 	}
 	db, err := sql.Open("sqlite", copyPath)
 	if err != nil {
-		return "", fmt.Errorf("Could not read Firefox cookie database")
+		return "", fmt.Errorf("could not read Firefox cookie database")
 	}
-	defer db.Close()
-	rows, err := db.Query(
+	defer func() { _ = db.Close() }()
+	rows, err := db.QueryContext(
+		ctx,
 		"SELECT name, value FROM moz_cookies WHERE name IN (?, 'phusr') AND (host = ? OR host = ?)",
 		cookieName, hostname, "."+hostname,
 	)
 	if err != nil {
-		return "", fmt.Errorf("Could not read Firefox cookie database")
+		return "", fmt.Errorf("could not read Firefox cookie database")
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	values := map[string]string{}
 	for rows.Next() {
 		var name, value string
 		if err := rows.Scan(&name, &value); err != nil {
-			return "", fmt.Errorf("Could not read Firefox cookie database")
+			return "", fmt.Errorf("could not read Firefox cookie database")
 		}
 		values[name] = value
 	}
 	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("Could not read Firefox cookie database")
+		return "", fmt.Errorf("could not read Firefox cookie database")
 	}
 	if values[cookieName] == "" {
 		return "", nil
@@ -275,7 +278,7 @@ func snapshotFirefoxDatabase(database, directory string) (string, error) {
 	copyPath := filepath.Join(directory, filepath.Base(database))
 	wal := database + "-wal"
 	walCopy := copyPath + "-wal"
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		_ = os.Remove(copyPath)
 		_ = os.Remove(walCopy)
 		if copyFile(database, copyPath) == nil {
@@ -292,15 +295,16 @@ func snapshotFirefoxDatabase(database, directory string) (string, error) {
 		}
 		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
 	}
-	return "", fmt.Errorf("Could not take a consistent snapshot of Firefox cookie database")
+	return "", fmt.Errorf("could not take a consistent snapshot of Firefox cookie database")
 }
 
+//nolint:gosec // Snapshot paths come from the selected Firefox profile and a private temporary directory.
 func copyFile(source, target string) error {
 	input, err := os.Open(source)
 	if err != nil {
 		return err
 	}
-	defer input.Close()
+	defer func() { _ = input.Close() }()
 	output, err := os.Create(target)
 	if err != nil {
 		return err
@@ -313,6 +317,7 @@ func copyFile(source, target string) error {
 	return closeErr
 }
 
+//nolint:gosec // Snapshot paths come from the selected Firefox profile and a private temporary directory.
 func filesMatch(first, second string) bool {
 	firstInfo, err := os.Stat(first)
 	if err != nil {
@@ -326,12 +331,12 @@ func filesMatch(first, second string) bool {
 	if err != nil {
 		return false
 	}
-	defer firstFile.Close()
+	defer func() { _ = firstFile.Close() }()
 	secondFile, err := os.Open(second)
 	if err != nil {
 		return false
 	}
-	defer secondFile.Close()
+	defer func() { _ = secondFile.Close() }()
 	firstHash, secondHash := sha256.New(), sha256.New()
 	if _, err := io.Copy(firstHash, firstFile); err != nil {
 		return false

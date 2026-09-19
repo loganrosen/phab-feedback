@@ -1,7 +1,9 @@
 package phabfeedback
 
 import (
+	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,7 +27,7 @@ func revisionNumber(revision string) (int, error) {
 	}
 	number, err := strconv.Atoi(value)
 	if err != nil || number < 1 {
-		return 0, fmt.Errorf("Invalid revision identifier: %s", revision)
+		return 0, fmt.Errorf("invalid revision identifier: %s", revision)
 	}
 	return number, nil
 }
@@ -33,7 +35,7 @@ func revisionNumber(revision string) (int, error) {
 func commentID(value string) (int, error) {
 	number, err := strconv.Atoi(value)
 	if err != nil || number < 1 {
-		return 0, fmt.Errorf("Invalid comment ID: %s", value)
+		return 0, fmt.Errorf("invalid comment ID: %s", value)
 	}
 	return number, nil
 }
@@ -93,13 +95,13 @@ func (s *feedbackService) listRevisions(role, status string, modifiedAfter *int6
 	}
 	constraint := roleConstraints[role]
 	if constraint == "" {
-		return nil, fmt.Errorf("Unsupported revision role: %s", role)
+		return nil, fmt.Errorf("unsupported revision role: %s", role)
 	}
 	if status != "open" && status != "closed" && status != "all" {
-		return nil, fmt.Errorf("Unsupported revision status: %s", status)
+		return nil, fmt.Errorf("unsupported revision status: %s", status)
 	}
 	if limit < 1 {
-		return nil, fmt.Errorf("Revision limit must be positive")
+		return nil, fmt.Errorf("revision limit must be positive")
 	}
 	var viewer struct {
 		PHID     string `json:"phid"`
@@ -120,7 +122,8 @@ func (s *feedbackService) listRevisions(role, status string, modifiedAfter *int6
 		constraints["modifiedStart"] = *modifiedAfter
 	}
 	search, err := s.conduit.search("differential.revision.search", constraints, map[string]any{"reviewers": true}, "updated", after, limit)
-	if network, ok := err.(*networkError); ok && status != "all" && network.status == 406 {
+	var network *networkError
+	if errors.As(err, &network) && status != "all" && network.status == 406 {
 		constraints["statuses"] = fallbackStatusConstraints[status]
 		search, err = s.conduit.search("differential.revision.search", constraints, map[string]any{"reviewers": true}, "updated", after, limit)
 	}
@@ -216,7 +219,7 @@ func (s *feedbackService) show(revision string) (map[string]any, error) {
 
 func (s *feedbackService) threads(revision, state string, currentDiffOnly bool) (map[string]any, error) {
 	if state != "unresolved" && state != "resolved" && state != "all" {
-		return nil, fmt.Errorf("Unsupported thread state: %s", state)
+		return nil, fmt.Errorf("unsupported thread state: %s", state)
 	}
 	timeline, err := s.timeline(revision)
 	if err != nil {
@@ -338,7 +341,7 @@ func (s *feedbackService) revisionContext(revision string, includeReviewers bool
 	}
 	revisions := revisionSearch.Data
 	if len(revisions) == 0 {
-		return 0, nil, nil, fmt.Errorf("D%d was not found", revisionID)
+		return 0, nil, nil, fmt.Errorf("revision D%d was not found", revisionID)
 	}
 	revisionData := revisions[0]
 	fields, ok := mapValue(revisionData["fields"])
@@ -347,7 +350,7 @@ func (s *feedbackService) revisionContext(revision string, includeReviewers bool
 	}
 	diffPHID := stringValue(fields["diffPHID"])
 	if diffPHID == "" {
-		return 0, nil, nil, fmt.Errorf("D%d returned no current diff", revisionID)
+		return 0, nil, nil, fmt.Errorf("revision D%d returned no current diff", revisionID)
 	}
 	var diffSearch searchPage
 	if err := s.conduit.call("differential.diff.search", map[string]any{"constraints": map[string]any{"phids": []string{diffPHID}}}, &diffSearch); err != nil {
@@ -355,7 +358,7 @@ func (s *feedbackService) revisionContext(revision string, includeReviewers bool
 	}
 	diffs := diffSearch.Data
 	if len(diffs) == 0 {
-		return 0, nil, nil, fmt.Errorf("Current diff for D%d was not found", revisionID)
+		return 0, nil, nil, fmt.Errorf("current diff for D%d was not found", revisionID)
 	}
 	currentDiff := diffs[0]
 	if currentDiff["phid"] == nil {
@@ -400,9 +403,7 @@ func (s *feedbackService) hydrateRevisionHandles(revisions []map[string]any) (ma
 		if err := s.conduit.call("phid.query", map[string]any{"phids": phids[offset:end]}, &result); err != nil {
 			return nil, err
 		}
-		for phid, handle := range result {
-			handles[phid] = handle
-		}
+		maps.Copy(handles, result)
 	}
 	return handles, nil
 }
@@ -485,7 +486,7 @@ func (s *feedbackService) draftInlineReply(revision, parent, message string) (ma
 	inline, _ := mapValue(payload["inline"])
 	replyID, ok := intValue(inline["id"])
 	if !ok || replyID < 1 {
-		return nil, fmt.Errorf("Inline reply creation returned no comment ID")
+		return nil, fmt.Errorf("inline reply creation returned no comment ID")
 	}
 	save := cloneStrings(common)
 	save["op"] = "save"
@@ -537,7 +538,7 @@ func (s *feedbackService) removeComment(revision, target string) (map[string]any
 		confirmed = latest != nil && boolValue(latest["removed"])
 	}
 	if !confirmed {
-		return nil, fmt.Errorf("Server did not confirm removal of comment %s", target)
+		return nil, fmt.Errorf("server did not confirm removal of comment %s", target)
 	}
 	targetID, _ := commentID(target)
 	return map[string]any{"revision_id": revisionID, "comment_id": targetID, "removed": true}, nil
@@ -569,7 +570,7 @@ func (s *feedbackService) markDone(revision string, targets []string) (map[strin
 			payload, _ = mapValue(response["payload"])
 		}
 		if !boolValue(payload["isChecked"]) {
-			return nil, fmt.Errorf("Server did not mark inline comment %d Done", identifier)
+			return nil, fmt.Errorf("server did not mark inline comment %d Done", identifier)
 		}
 		results = append(results, map[string]any{"comment_id": identifier, "is_done": true, "draft": boolValue(payload["draftState"])})
 	}
@@ -642,7 +643,7 @@ func (s *feedbackService) requestAIReview(revision string) (map[string]any, erro
 
 func (s *feedbackService) validateComments(revision string, values []string, expectedType string) ([]int, error) {
 	if len(values) == 0 {
-		return nil, fmt.Errorf("At least one comment ID is required")
+		return nil, fmt.Errorf("at least one comment ID is required")
 	}
 	ids := make([]int, 0, len(values))
 	for _, value := range values {
@@ -670,17 +671,17 @@ func (s *feedbackService) validateComments(revision string, values []string, exp
 	for _, identifier := range ids {
 		transaction := byID[identifier]
 		if transaction == nil {
-			return nil, fmt.Errorf("Comment %d was not found on D%d", identifier, revisionID)
+			return nil, fmt.Errorf("comment %d was not found on D%d", identifier, revisionID)
 		}
 		actual := stringValue(transaction["type"])
 		if actual == "" {
 			actual = "non-comment"
 		}
 		if actual != expectedType {
-			return nil, fmt.Errorf("Comment %d is a %s transaction, not %s", identifier, actual, expectedType)
+			return nil, fmt.Errorf("comment %d is a %s transaction, not %s", identifier, actual, expectedType)
 		}
 		if activeComment(transaction) == nil {
-			return nil, fmt.Errorf("Comment %d has been removed", identifier)
+			return nil, fmt.Errorf("comment %d has been removed", identifier)
 		}
 	}
 	return ids, nil
@@ -711,16 +712,16 @@ func (s *feedbackService) findComment(revision, target, expectedType string) (ma
 			actual = "non-comment"
 		}
 		if actual != expectedType {
-			return nil, nil, fmt.Errorf("Comment %d is a %s transaction, not %s", identifier, actual, expectedType)
+			return nil, nil, fmt.Errorf("comment %d is a %s transaction, not %s", identifier, actual, expectedType)
 		}
 		comment := activeComment(transaction)
 		if comment == nil {
-			return nil, nil, fmt.Errorf("Comment %d has been removed", identifier)
+			return nil, nil, fmt.Errorf("comment %d has been removed", identifier)
 		}
 		return transaction, comment, nil
 	}
 	revisionID, _ := revisionNumber(revision)
-	return nil, nil, fmt.Errorf("Comment %d was not found on D%d", identifier, revisionID)
+	return nil, nil, fmt.Errorf("comment %d was not found on D%d", identifier, revisionID)
 }
 
 func objectSlice(value any, method string) ([]map[string]any, error) {
@@ -883,8 +884,6 @@ func mapsToAny(items []map[string]any) []any {
 
 func cloneStrings(source map[string]string) map[string]string {
 	result := make(map[string]string, len(source)+2)
-	for key, value := range source {
-		result[key] = value
-	}
+	maps.Copy(result, source)
 	return result
 }
