@@ -3,8 +3,8 @@
 `phab-feedback` is a small command-line client for discovering, inspecting, and
 acting on Phabricator and Phorge review feedback. It groups inline conversations
 without losing exact comment IDs, preserves inline replies as real thread
-replies, keeps draft actions explicit, and writes structured JSON for people and
-automation.
+replies, keeps draft actions explicit, and provides readable output for people
+with structured JSON available for automation.
 
 ## How this differs
 
@@ -99,10 +99,11 @@ config file.
 
 ## Commands and draft behavior
 
-Successful commands write JSON to stdout. The read-only commands also support
-`--format text` for compact interactive output. `comment` and `reply-inline`
-read message text from `--message`, `--message-file PATH`, `--message-file -`,
-or redirected stdin. File or stdin input avoids shell-quoting mistakes.
+Successful commands write compact, human-readable text to stdout. Every command
+supports `--format json` for agents, scripts, and other structured consumers.
+`comment` and `reply-inline` read message text from `--message`,
+`--message-file PATH`, `--message-file -`, or redirected stdin. File or stdin
+input avoids shell-quoting mistakes.
 
 Discover revisions with `list`, use `show` for a summary, and use `threads` or
 `timeline` to obtain the exact comment `id` values required by later commands.
@@ -146,11 +147,11 @@ phab-feedback submit D123
 phab-feedback remove-comment D123 789
 ```
 
-`list` supports `responsible`, `authored`, and `reviewing` roles. Its JSON
-response contains normalized revision records plus the server `cursor`; pass a
-non-null `cursor.after` value back through `--after` to continue. `show` reports
-unresolved and resolved root threads, replies, orphan replies, general comments,
-and comments on older diffs.
+`list` supports `responsible`, `authored`, and `reviewing` roles. With
+`--format json`, its response contains normalized revision records plus the
+server `cursor`; pass a non-null `cursor.after` value back through `--after` to
+continue. `show` reports unresolved and resolved root threads, replies, orphan
+replies, general comments, and comments on older diffs.
 
 The `open` and `closed` filters normally use Phorge's status datasource
 functions. If a server rejects those function tokens with HTTP 406, the CLI
@@ -163,13 +164,14 @@ reported under `orphan_replies` rather than attached by guesswork. Every root,
 reply, and orphan retains its timeline `id`, PHID, diff, path, line, and direct
 parent fields.
 
-For interactive output:
+For structured output:
 
 ```bash
-phab-feedback list --role reviewing --format text
-phab-feedback show D123 --format text
-phab-feedback threads D123 --state all --format text
-phab-feedback timeline D123 --format text
+phab-feedback list --role reviewing --format json
+phab-feedback show D123 --format json
+phab-feedback threads D123 --state all --format json
+phab-feedback timeline D123 --format json
+phab-feedback mark-done D123 456 457 --format json
 ```
 
 `comment` and `remove-comment` take effect immediately. `reply-inline` and

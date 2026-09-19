@@ -368,6 +368,66 @@ func TestJSONOutputUsesStableIndentation(t *testing.T) {
 	}
 }
 
+func TestOutputFormatDefaultsToText(t *testing.T) {
+	root := newRootCommand(strings.NewReader(""), io.Discard, io.Discard)
+	format, err := root.PersistentFlags().GetString("format")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if format != "text" {
+		t.Fatalf("default format = %q, want text", format)
+	}
+}
+
+func TestMutationTextOutput(t *testing.T) {
+	tests := []struct {
+		command string
+		result  map[string]any
+		want    string
+	}{
+		{
+			command: "comment",
+			result:  map[string]any{"revision_id": 12},
+			want:    "Posted a comment on D12.",
+		},
+		{
+			command: "reply-inline",
+			result: map[string]any{
+				"revision_id": 12, "parent_comment_id": 34, "draft_comment_id": 56,
+				"submission": map[string]any{"revision_id": 12},
+			},
+			want: "Drafted inline reply #56 to comment #34 on D12.\nSubmitted pending drafts on D12.",
+		},
+		{
+			command: "mark-done",
+			result: map[string]any{
+				"revision_id": 12,
+				"comments": []any{
+					map[string]any{"comment_id": 34},
+					map[string]any{"comment_id": 35},
+				},
+			},
+			want: "Marked #34, #35 Done as drafts on D12.",
+		},
+		{
+			command: "request-ai-review",
+			result:  map[string]any{"revision_id": 12, "status": "already-in-progress"},
+			want:    "A Review Helper AI review is already in progress on D12.",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.command, func(t *testing.T) {
+			got, err := renderText(test.command, test.result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("text output = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
