@@ -89,13 +89,16 @@ func (s *feedbackService) batch(manifest batchManifest, submit, dryRun bool) (ba
 	}
 	result.Mutations = make([]batchMutation, 0, len(result.Mutations))
 	completedMutations := 0
+	mutationIndex := 0
 	for index, action := range manifest.Actions {
 		position := index + 1
 		comment := byID[action.CommentID]
 		if action.Reply != nil {
+			mutationIndex++
 			reply, replyErr := s.draftInlineReplyValidated(revisionID, comment, *action.Reply)
 			mutation := batchMutation{
-				Index: position, Action: "reply", CommentID: action.CommentID,
+				ActionIndex: position, MutationIndex: mutationIndex,
+				Action: "reply", CommentID: action.CommentID,
 				ParentCommentID: action.CommentID, CreatedReplyID: reply.CreatedReplyID,
 				Saved: reply.Saved,
 			}
@@ -106,24 +109,28 @@ func (s *feedbackService) batch(manifest batchManifest, submit, dryRun bool) (ba
 			}
 			result.Mutations = append(result.Mutations, mutation)
 			if replyErr != nil {
-				return failedBatch(result, position, "reply", completedMutations, replyErr)
+				return failedBatch(result, position, mutationIndex, "reply", completedMutations, replyErr)
 			}
 			completedMutations++
 		}
 		if action.Done != nil {
+			mutationIndex++
 			done, doneErr := s.markDoneValidated(revisionID, []validatedComment{comment})
 			var mutation batchMutation
 			if len(done.Comments) > 0 {
 				item := done.Comments[0]
 				mutation = batchMutation{
-					Index: position, Action: "done", CommentID: action.CommentID,
+					ActionIndex: position, MutationIndex: mutationIndex,
+					Action: "done", CommentID: action.CommentID,
 					Draft: item.Draft, Published: item.Published,
-					FinalDone: item.FinalDone, Recovery: item.Recovery,
+					FinalDone:       item.FinalDone,
+					ObservedChecked: item.ObservedChecked, ObservedDraftState: item.ObservedDraftState,
+					Recovery: item.Recovery,
 				}
 				result.Mutations = append(result.Mutations, mutation)
 			}
 			if doneErr != nil {
-				return failedBatch(result, position, "done", completedMutations, doneErr)
+				return failedBatch(result, position, mutationIndex, "done", completedMutations, doneErr)
 			}
 			completedMutations++
 		}
@@ -135,7 +142,7 @@ func (s *feedbackService) batch(manifest batchManifest, submit, dryRun bool) (ba
 	submission, err := s.submit(manifest.Revision)
 	result.Submission = &submission
 	if err != nil {
-		return failedBatch(result, len(manifest.Actions), "submit", completedMutations, err)
+		return failedBatch(result, 0, 0, "submit", completedMutations, err)
 	}
 	for index := range result.Mutations {
 		if boolPointerValue(result.Mutations[index].Draft) {
@@ -150,17 +157,22 @@ func (s *feedbackService) batch(manifest batchManifest, submit, dryRun bool) (ba
 
 func plannedBatchMutations(manifest batchManifest) []batchMutation {
 	mutations := make([]batchMutation, 0, len(manifest.Actions)*2)
+	mutationIndex := 0
 	for index, action := range manifest.Actions {
 		position := index + 1
 		if action.Reply != nil {
+			mutationIndex++
 			mutations = append(mutations, batchMutation{
-				Index: position, Action: "reply", CommentID: action.CommentID,
+				ActionIndex: position, MutationIndex: mutationIndex,
+				Action: "reply", CommentID: action.CommentID,
 				ParentCommentID: action.CommentID, Planned: true,
 			})
 		}
 		if action.Done != nil {
+			mutationIndex++
 			mutations = append(mutations, batchMutation{
-				Index: position, Action: "done", CommentID: action.CommentID,
+				ActionIndex: position, MutationIndex: mutationIndex,
+				Action: "done", CommentID: action.CommentID,
 				Planned: true,
 			})
 		}
@@ -168,16 +180,27 @@ func plannedBatchMutations(manifest batchManifest) []batchMutation {
 	return mutations
 }
 
-func failedBatch(result batchResult, index int, action string, completedMutations int, cause error) (batchResult, error) {
+func failedBatch(
+	result batchResult,
+	actionIndex, mutationIndex int,
+	action string,
+	completedMutations int,
+	cause error,
+) (batchResult, error) {
 	result.State = "partial"
 	result.Failure = &batchFailure{
-		Index: index, Action: action, CompletedMutations: completedMutations, Error: cause.Error(),
+		ActionIndex: actionIndex, MutationIndex: mutationIndex,
+		Action: action, CompletedMutations: completedMutations, Error: cause.Error(),
+	}
+	location := "during submission"
+	if actionIndex > 0 {
+		location = fmt.Sprintf("during manifest action %d, mutation %d (%s)", actionIndex, mutationIndex, action)
 	}
 	return result, &mutationResultError{
 		result: result,
 		err: fmt.Errorf(
-			"remote partial failure during batch action %d (%s); %d prior mutations completed and attempted mutations may remain on the server: %w",
-			index, action, completedMutations, cause,
+			"remote partial failure %s; %d prior mutations completed and attempted mutations may remain on the server: %w",
+			location, completedMutations, cause,
 		),
 	}
 }
@@ -266,11 +289,11 @@ func (s *feedbackService) verify(revision string, replies []replyExpectation, do
 		conduitIsDone := found && boolValue(fields["isDone"])
 		result.Done = append(result.Done, doneVerification{
 			CommentID: identifier, Found: found, ConduitIsDone: conduitIsDone,
-			Ambiguous: conduitIsDone,
 		})
 		result.Verified = result.Verified && found && conduitIsDone
 	}
 	if len(doneIDs) > 0 {
+		result.DoneStateAmbiguous = true
 		result.Limitations = append(result.Limitations,
 			"Conduit isDone cannot distinguish published Done from a pending undo-Done draft.",
 		)

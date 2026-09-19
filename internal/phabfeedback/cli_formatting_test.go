@@ -215,18 +215,18 @@ func TestMutationTextOutput(t *testing.T) {
 				Saved:      true,
 				Submission: &submissionResult{RevisionID: 12, Submitted: true},
 			},
-			want: "Drafted inline reply #56 to comment #34 on D12.\nSubmitted pending drafts on D12.",
+			want: "Drafted inline reply #56 to comment #34 on D12.\nSubmitted every pending draft you own on D12.",
 		},
 		{
 			command: "done",
 			result: commentActionResult{
 				RevisionID: 12,
 				Comments: []commentAction{
-					{CommentID: 34},
-					{CommentID: 35},
+					{CommentID: 34, Draft: new(true)},
+					{CommentID: 35, Draft: new(true)},
 				},
 			},
-			want: "Confirmed #34, #35 Done on D12.",
+			want: "Created Done drafts for #34, #35 on D12.",
 		},
 		{
 			command: "ai-review",
@@ -252,11 +252,11 @@ func TestDoneFailureTextPreservesEarlierConfirmedComments(t *testing.T) {
 	got := ansi.Strip(renderDone(commentActionResult{
 		RevisionID: 12,
 		Comments: []commentAction{
-			{CommentID: 34},
+			{CommentID: 34, Draft: new(true)},
 			{CommentID: 35, Recovery: "Rerun done before submitting."},
 		},
 	}))
-	want := "Confirmed #34 Done on D12.\n" +
+	want := "Created Done drafts for #34 on D12.\n" +
 		"Done action for comment #35 on D12 requires recovery: Rerun done before submitting."
 	if got != want {
 		t.Fatalf("text output = %q, want %q", got, want)
@@ -285,6 +285,42 @@ func TestBatchAndMutationHelpExposeExplicitPublicationFlags(t *testing.T) {
 				t.Fatalf("%v help missing %q:\n%s", test.args, expected, output.String())
 			}
 		}
+	}
+}
+
+func TestSubmitHelpWarnsAboutRevisionWideDraftPublication(t *testing.T) {
+	tests := [][]string{
+		{"D123", "reply", "--help"},
+		{"D123", "done", "--help"},
+		{"D123", "submit", "--help"},
+		{"batch", "--help"},
+	}
+	for _, args := range tests {
+		var output bytes.Buffer
+		root := newRootCommand(args, strings.NewReader(""), &output, &output)
+		root.SetArgs(args)
+		if err := root.Execute(); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if !strings.Contains(output.String(), "every pending draft you own") {
+			t.Fatalf("%v help omits revision-wide publication warning:\n%s", args, output.String())
+		}
+	}
+}
+
+func TestVerificationTextIncludesLimitations(t *testing.T) {
+	got := ansi.Strip(renderVerification(verificationResult{
+		RevisionID: 12,
+		Verified:   true,
+		Done:       []doneVerification{{CommentID: 34, Found: true, ConduitIsDone: true}},
+		Limitations: []string{
+			"Conduit isDone cannot distinguish published Done from a pending undo-Done draft.",
+		},
+	}))
+	want := "Verified 0 reply links and 1 Conduit Done indicators on D12.\n" +
+		"Limitation: Conduit isDone cannot distinguish published Done from a pending undo-Done draft."
+	if got != want {
+		t.Fatalf("text output = %q, want %q", got, want)
 	}
 }
 

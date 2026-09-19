@@ -71,6 +71,9 @@ approval. Prefer message files or stdin:
 - Use `remove-comment` only for an accidental top-level comment.
 
 Never combine reply, Done, removal, or submission actions implicitly.
+If a `done` command is interrupted, inspect the comment and rerun `done` before
+any later submission; the upstream toggle may have left a pending undo-Done
+draft without returning a result.
 
 ## Batch approved actions
 

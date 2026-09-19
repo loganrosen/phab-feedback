@@ -638,38 +638,62 @@ func (s *feedbackService) markDoneValidated(revisionID int, comments []validated
 				err:    fmt.Errorf("remote mutation outcome is unknown while marking inline comment %d Done; %s: %w", identifier, recovery, err),
 			}
 		}
-		payload, _ := mapValue(response["payload"])
-		if !boolValue(payload["isChecked"]) {
-			firstDraftState := boolValue(payload["draftState"])
+		checked, draftState, err := doneResponseState(response)
+		if err != nil {
+			recovery := "The Done response was invalid, so the mutation outcome is unknown. Inspect this comment before submitting any drafts, then rerun done if needed."
+			result.Comments = append(result.Comments, commentAction{
+				Action: "done", CommentID: identifier, Recovery: recovery,
+			})
+			return result, &mutationResultError{
+				result: result,
+				err:    fmt.Errorf("invalid Done response for inline comment %d; %s: %w", identifier, recovery, err),
+			}
+		}
+		if !checked {
+			firstDraftState := draftState
 			response, err = s.web.post(path, data)
 			if err != nil {
-				isDone := false
+				observedChecked := false
 				recovery := doneRecoveryMessage(firstDraftState, true)
 				result.Comments = append(result.Comments, commentAction{
-					Action: "done", CommentID: identifier, IsDone: &isDone,
-					Draft: &firstDraftState, Recovery: recovery,
+					Action: "done", CommentID: identifier,
+					ObservedChecked: &observedChecked, ObservedDraftState: &firstDraftState,
+					Recovery: recovery,
 				})
 				return result, &mutationResultError{
 					result: result,
 					err:    fmt.Errorf("done retry failed for inline comment %d; %s: %w", identifier, recovery, err),
 				}
 			}
-			payload, _ = mapValue(response["payload"])
+			checked, draftState, err = doneResponseState(response)
+			if err != nil {
+				observedChecked := false
+				recovery := doneRecoveryMessage(firstDraftState, true)
+				result.Comments = append(result.Comments, commentAction{
+					Action: "done", CommentID: identifier,
+					ObservedChecked: &observedChecked, ObservedDraftState: &firstDraftState,
+					Recovery: recovery,
+				})
+				return result, &mutationResultError{
+					result: result,
+					err:    fmt.Errorf("invalid Done retry response for inline comment %d; %s: %w", identifier, recovery, err),
+				}
+			}
 		}
-		if !boolValue(payload["isChecked"]) {
-			isDone := false
-			draftState := boolValue(payload["draftState"])
+		if !checked {
+			observedChecked := false
 			recovery := doneRecoveryMessage(draftState, false)
 			result.Comments = append(result.Comments, commentAction{
-				Action: "done", CommentID: identifier, IsDone: &isDone,
-				Draft: &draftState, Recovery: recovery,
+				Action: "done", CommentID: identifier,
+				ObservedChecked: &observedChecked, ObservedDraftState: &draftState,
+				Recovery: recovery,
 			})
 			return result, &mutationResultError{
 				result: result,
 				err:    fmt.Errorf("server left inline comment %d unchecked; %s", identifier, recovery),
 			}
 		}
-		isDone, draft := true, boolValue(payload["draftState"])
+		isDone, draft := true, draftState
 		published := !draft
 		result.Comments = append(result.Comments, commentAction{
 			Action: "done", CommentID: identifier, IsDone: &isDone, FinalDone: &isDone,
@@ -677,6 +701,22 @@ func (s *feedbackService) markDoneValidated(revisionID int, comments []validated
 		})
 	}
 	return result, nil
+}
+
+func doneResponseState(response map[string]any) (bool, bool, error) {
+	payload, ok := mapValue(response["payload"])
+	if !ok {
+		return false, false, fmt.Errorf("response payload is missing")
+	}
+	checked, ok := payload["isChecked"].(bool)
+	if !ok {
+		return false, false, fmt.Errorf("response payload has no boolean isChecked")
+	}
+	draftState, ok := payload["draftState"].(bool)
+	if !ok {
+		return false, false, fmt.Errorf("response payload has no boolean draftState")
+	}
+	return checked, draftState, nil
 }
 
 func doneRecoveryMessage(draftState, retryOutcomeUnknown bool) string {

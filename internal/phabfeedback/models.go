@@ -218,15 +218,17 @@ type removedCommentResult struct {
 }
 
 type commentAction struct {
-	Action    string `json:"action,omitempty"`
-	CommentID int    `json:"comment_id"`
-	IsDone    *bool  `json:"is_done,omitempty"`
-	FinalDone *bool  `json:"final_done,omitempty"`
-	Draft     *bool  `json:"draft,omitempty"`
-	Published *bool  `json:"published,omitempty"`
-	Recovery  string `json:"recovery,omitempty"`
-	Helpful   *bool  `json:"helpful,omitempty"`
-	Message   any    `json:"message,omitempty"`
+	Action             string `json:"action,omitempty"`
+	CommentID          int    `json:"comment_id"`
+	IsDone             *bool  `json:"is_done,omitempty"`
+	FinalDone          *bool  `json:"final_done,omitempty"`
+	Draft              *bool  `json:"draft,omitempty"`
+	Published          *bool  `json:"published,omitempty"`
+	ObservedChecked    *bool  `json:"observed_checked,omitempty"`
+	ObservedDraftState *bool  `json:"observed_draft_state,omitempty"`
+	Recovery           string `json:"recovery,omitempty"`
+	Helpful            *bool  `json:"helpful,omitempty"`
+	Message            any    `json:"message,omitempty"`
 }
 
 type commentActionResult struct {
@@ -268,21 +270,25 @@ type batchManifestAction struct {
 }
 
 type batchMutation struct {
-	Index           int    `json:"index"`
-	Action          string `json:"action"`
-	CommentID       int    `json:"comment_id"`
-	ParentCommentID int    `json:"parent_comment_id,omitempty"`
-	CreatedReplyID  int    `json:"created_reply_id,omitempty"`
-	Planned         bool   `json:"planned,omitempty"`
-	Saved           bool   `json:"saved,omitempty"`
-	Draft           *bool  `json:"draft,omitempty"`
-	Published       *bool  `json:"published,omitempty"`
-	FinalDone       *bool  `json:"final_done,omitempty"`
-	Recovery        string `json:"recovery,omitempty"`
+	ActionIndex        int    `json:"action_index"`
+	MutationIndex      int    `json:"mutation_index"`
+	Action             string `json:"action"`
+	CommentID          int    `json:"comment_id"`
+	ParentCommentID    int    `json:"parent_comment_id,omitempty"`
+	CreatedReplyID     int    `json:"created_reply_id,omitempty"`
+	Planned            bool   `json:"planned,omitempty"`
+	Saved              bool   `json:"saved,omitempty"`
+	Draft              *bool  `json:"draft,omitempty"`
+	Published          *bool  `json:"published,omitempty"`
+	FinalDone          *bool  `json:"final_done,omitempty"`
+	ObservedChecked    *bool  `json:"observed_checked,omitempty"`
+	ObservedDraftState *bool  `json:"observed_draft_state,omitempty"`
+	Recovery           string `json:"recovery,omitempty"`
 }
 
 type batchFailure struct {
-	Index              int    `json:"index"`
+	ActionIndex        int    `json:"action_index,omitempty"`
+	MutationIndex      int    `json:"mutation_index,omitempty"`
 	Action             string `json:"action"`
 	CompletedMutations int    `json:"completed_mutations"`
 	Error              string `json:"error"`
@@ -315,14 +321,14 @@ type doneVerification struct {
 	CommentID     int  `json:"comment_id"`
 	Found         bool `json:"found"`
 	ConduitIsDone bool `json:"conduit_is_done"`
-	Ambiguous     bool `json:"ambiguous_pending_undo"`
 }
 
 type verificationResult struct {
-	RevisionID  int                 `json:"revision_id"`
-	Action      string              `json:"action"`
-	Verified    bool                `json:"verified"`
-	Replies     []replyVerification `json:"replies"`
-	Done        []doneVerification  `json:"done"`
-	Limitations []string            `json:"limitations,omitempty"`
+	RevisionID         int                 `json:"revision_id"`
+	Action             string              `json:"action"`
+	Verified           bool                `json:"verified"`
+	Replies            []replyVerification `json:"replies"`
+	Done               []doneVerification  `json:"done"`
+	DoneStateAmbiguous bool                `json:"done_state_ambiguous,omitempty"`
+	Limitations        []string            `json:"limitations,omitempty"`
 }

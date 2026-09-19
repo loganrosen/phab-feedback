@@ -77,9 +77,12 @@ func TestBatchDryRunReportsPlanWithoutWebMutation(t *testing.T) {
 	if result.State != "planned" || !result.DryRun || !result.Submit || len(result.Mutations) != 2 {
 		t.Fatalf("unexpected dry-run result: %#v", result)
 	}
-	for _, mutation := range result.Mutations {
+	for index, mutation := range result.Mutations {
 		if !mutation.Planned || mutation.Draft != nil || mutation.Published != nil || mutation.FinalDone != nil {
 			t.Fatalf("dry-run reported observed state: %#v", mutation)
+		}
+		if mutation.ActionIndex != 1 || mutation.MutationIndex != index+1 {
+			t.Fatalf("unexpected mutation indexes: %#v", mutation)
 		}
 	}
 	if len(transport.requests) != 1 {
@@ -111,6 +114,10 @@ func TestBatchDoneFailureReportsRecoveryAndSkipsSubmit(t *testing.T) {
 		t.Fatalf("unexpected batch failure: %#v %v", result, err)
 	}
 	if result.Failure.CompletedMutations != 1 || len(result.Mutations) != 2 ||
+		result.Failure.ActionIndex != 2 || result.Failure.MutationIndex != 2 ||
+		result.Mutations[1].Draft != nil || result.Mutations[1].Published != nil ||
+		result.Mutations[1].ObservedChecked == nil || *result.Mutations[1].ObservedChecked ||
+		result.Mutations[1].ObservedDraftState == nil || !*result.Mutations[1].ObservedDraftState ||
 		!strings.Contains(result.Mutations[1].Recovery, "pending undo-Done draft") {
 		t.Fatalf("unexpected partial details: %#v", result)
 	}
@@ -303,7 +310,7 @@ func TestVerifyChecksReplyParentAndDoneState(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !result.Verified || !result.Replies[0].Linked || !result.Done[0].ConduitIsDone ||
-		!result.Done[0].Ambiguous || len(result.Limitations) != 1 {
+		!result.DoneStateAmbiguous || len(result.Limitations) != 1 {
 		t.Fatalf("unexpected verification: %#v", result)
 	}
 }

@@ -230,6 +230,11 @@ output identifies whether the first confirmed toggle created a pending
 undo-Done draft or cleared a pending Done draft and gives the required recovery
 step.
 
+There is an unavoidable interruption window between the two Done toggle
+requests used to reconcile ambiguous upstream state. If the process is killed
+or loses connectivity before it can report a result, inspect the comment and
+rerun `done` before any later submission.
+
 Phabricator submission is revision-wide for the current user: `submit` and
 every `--submit` form publish all eligible pending inline drafts owned by that
 user on the revision, including drafts created earlier in the browser or by
@@ -239,14 +244,18 @@ Mutation JSON includes the revision and action plus operation-specific fields
 such as `created_reply_id`, `parent_comment_id`, `draft`, `published`, and
 `final_done`. Batch dry-run entries instead use `planned: true`; they do not
 claim draft, publication, or final Done state before mutation.
+If a Done retry fails, `observed_checked` and `observed_draft_state` describe
+only the last confirmed response; normal result fields remain absent because
+the final remote outcome is unknown.
 
 The `verify` command exits nonzero when a requested reply is missing, its direct
 parent does not match, or Conduit reports `isDone: false`. Reply verification
 checks visibility and direct-parent linkage but does not independently prove
-publication. Done verification reports `conduit_is_done` and
-`ambiguous_pending_undo`: upstream Conduit represents both published `DONE` and
-a pending `UNDRAFT` transition as `isDone: true`, so it cannot prove that no
-pending undo-Done draft exists.
+publication. Done verification reports `conduit_is_done` and sets the
+result-level `done_state_ambiguous` flag: upstream Conduit represents both
+published `DONE` and a pending `UNDRAFT` transition as `isDone: true`, so it
+cannot prove that no pending undo-Done draft exists. Text output prints the same
+limitation.
 
 ### Batch action manifests
 
@@ -300,7 +309,9 @@ published inline transactions together, but the preceding draft-creation calls
 are separate requests and can not be rolled back as a unit. A network or server
 failure can therefore leave earlier drafts behind. In that case the command
 exits nonzero and reports `state: "partial"`, attempted or completed mutations,
-and the failed action; it never submits after a draft operation fails.
+and the failed action; it never submits after a draft operation fails. Each
+mutation has a unique `mutation_index` plus its source manifest
+`action_index`, so combined reply-and-Done entries remain unambiguous.
 
 Queue listing, revision inspection, and `comment` use standard Conduit APIs.
 Inline reply drafting, top-level comment removal, Done drafting, and draft

@@ -178,12 +178,84 @@ func TestMarkDoneRetryFailureReportsActionableState(t *testing.T) {
 			if err == nil || len(result.Comments) != 1 {
 				t.Fatalf("unexpected result: %#v %v", result, err)
 			}
-			if result.Comments[0].Recovery == "" ||
+			comment := result.Comments[0]
+			if comment.IsDone != nil || comment.Draft != nil || comment.Published != nil ||
+				comment.ObservedChecked == nil || *comment.ObservedChecked ||
+				comment.ObservedDraftState == nil || *comment.ObservedDraftState != test.draftState ||
+				comment.Recovery == "" ||
 				!strings.Contains(result.Comments[0].Recovery, test.want) ||
 				!strings.Contains(err.Error(), "Rerun done") {
 				t.Fatalf("missing recovery guidance: %#v %v", result, err)
 			}
+			body, marshalErr := json.Marshal(comment)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			text := string(body)
+			for _, absent := range []string{`"is_done"`, `"draft"`, `"published"`} {
+				if strings.Contains(text, absent) {
+					t.Fatalf("unknown outcome included %s: %s", absent, text)
+				}
+			}
+			for _, present := range []string{`"observed_checked":false`, `"observed_draft_state":`} {
+				if !strings.Contains(text, present) {
+					t.Fatalf("observed state missing %s: %s", present, text)
+				}
+			}
 		})
+	}
+}
+
+func TestMarkDoneDoesNotRetryMalformedResponse(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload map[string]any
+	}{
+		{name: "missing checked", payload: map[string]any{"draftState": true}},
+		{name: "missing draft state", payload: map[string]any{"isChecked": false}},
+		{name: "wrong checked type", payload: map[string]any{"isChecked": "false", "draftState": true}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+			service, transport := serviceWith(
+				conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+				response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+				response(map[string]any{"payload": test.payload}),
+			)
+			result, err := service.markDone("D1", []string{"20"}, false)
+			if err == nil || !strings.Contains(err.Error(), "invalid Done response") ||
+				len(result.Comments) != 1 || result.Comments[0].Recovery == "" {
+				t.Fatalf("unexpected result: %#v %v", result, err)
+			}
+			if len(transport.requests) != 3 {
+				t.Fatalf("malformed response triggered another mutation: %d requests", len(transport.requests))
+			}
+		})
+	}
+}
+
+func TestMarkDoneMalformedRetryPreservesOnlyObservedState(t *testing.T) {
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": true})
+	service, transport := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"isChecked": false, "draftState": true}}),
+		response(map[string]any{"payload": map[string]any{"draftState": false}}),
+	)
+	result, err := service.markDone("D1", []string{"20"}, false)
+	if err == nil || !strings.Contains(err.Error(), "invalid Done retry response") ||
+		len(result.Comments) != 1 {
+		t.Fatalf("unexpected result: %#v %v", result, err)
+	}
+	comment := result.Comments[0]
+	if comment.IsDone != nil || comment.Draft != nil || comment.Published != nil ||
+		comment.ObservedChecked == nil || *comment.ObservedChecked ||
+		comment.ObservedDraftState == nil || !*comment.ObservedDraftState {
+		t.Fatalf("unexpected observed state: %#v", comment)
+	}
+	if len(transport.requests) != 4 {
+		t.Fatalf("request count = %d, want 4", len(transport.requests))
 	}
 }
 
@@ -256,6 +328,7 @@ func TestAIReviewContract(t *testing.T) {
 }
 
 func TestDoctorChecksReadOnlyCredentialsAndCapabilities(t *testing.T) {
+	isolateCredentialFiles(t)
 	var methods []string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		methods = append(methods, request.Method+" "+request.URL.Path)
@@ -288,6 +361,7 @@ func TestDoctorChecksReadOnlyCredentialsAndCapabilities(t *testing.T) {
 }
 
 func TestDoctorRejectsLoggedOutSession(t *testing.T) {
+	isolateCredentialFiles(t)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/api/user.whoami":
@@ -316,6 +390,7 @@ func TestDoctorRejectsLoggedOutSession(t *testing.T) {
 }
 
 func TestDoctorAllowsMissingOptionalWebSession(t *testing.T) {
+	isolateCredentialFiles(t)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/api/user.whoami" {
 			http.NotFound(writer, request)
