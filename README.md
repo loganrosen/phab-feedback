@@ -219,11 +219,12 @@ phab-feedback D123 done 456 457 --submit
 
 `reply --done` always creates and saves the reply draft before attempting the
 Done draft. With `--submit`, the CLI submits once only after both draft
-operations succeed. Phabricator's internal web endpoints do not provide a
-server-side transaction spanning inline draft creation, Done state, and
-submission. If a later remote request fails, the command exits nonzero and its
-text or JSON output identifies any earlier mutation that may remain on the
-server.
+operations succeed. During that final submission, Phabricator publishes
+eligible inline drafts before applying their Done-state transition and commits
+the transaction set together. Draft preparation still requires separate web
+requests, so a failure before submission can leave unpublished drafts behind.
+The command exits nonzero and its text or JSON output identifies any mutation
+whose remote state may need inspection.
 
 Mutation JSON includes the revision and action plus operation-specific fields
 such as `created_reply_id`, `parent_comment_id`, `draft`, `published`, and
@@ -273,11 +274,12 @@ phab-feedback batch actions.json
 phab-feedback batch actions.json --submit --format json
 ```
 
-Validation failures never mutate the revision. True server-side atomicity is
-not available for these internal endpoints, so a network or server failure can
-leave earlier drafts behind. In that case the command exits nonzero and reports
-`state: "partial"`, completed mutations, and the failed action; it never submits
-after a draft operation fails.
+Validation failures never mutate the revision. Phabricator applies the final
+published inline transactions together, but the preceding draft-creation calls
+are separate requests and can not be rolled back as a unit. A network or server
+failure can therefore leave earlier drafts behind. In that case the command
+exits nonzero and reports `state: "partial"`, attempted or completed mutations,
+and the failed action; it never submits after a draft operation fails.
 
 Queue listing, revision inspection, and `comment` use standard Conduit APIs.
 Inline reply drafting, top-level comment removal, Done drafting, and draft

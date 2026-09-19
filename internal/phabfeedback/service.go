@@ -620,15 +620,8 @@ func (s *feedbackService) markDoneValidated(revisionID int, comments []validated
 	result := commentActionResult{RevisionID: revisionID, Action: "done", Comments: make([]commentAction, 0, len(comments))}
 	for _, comment := range comments {
 		identifier := comment.ID
-		fields, _ := mapValue(comment.Transaction["fields"])
-		if boolValue(fields["isDone"]) {
-			isDone, draft, published := true, false, true
-			result.Comments = append(result.Comments, commentAction{
-				Action: "done", CommentID: identifier, IsDone: &isDone, FinalDone: &isDone,
-				Draft: &draft, Published: &published,
-			})
-			continue
-		}
+		// Conduit reports both published Done and a pending undo draft as
+		// isDone=true, so use the toggle response to establish the final state.
 		data := map[string]string{"op": "done", "id": strconv.Itoa(identifier), "__wflow__": "true", "__ajax__": "true"}
 		response, err := s.web.post(path, data)
 		if err != nil {
@@ -655,7 +648,8 @@ func (s *feedbackService) markDoneValidated(revisionID int, comments []validated
 				err:    fmt.Errorf("remote partial failure after %d confirmed Done changes: %w", len(result.Comments), err),
 			}
 		}
-		isDone, draft, published := true, boolValue(payload["draftState"]), false
+		isDone, draft := true, boolValue(payload["draftState"])
+		published := !draft
 		result.Comments = append(result.Comments, commentAction{
 			Action: "done", CommentID: identifier, IsDone: &isDone, FinalDone: &isDone,
 			Draft: &draft, Published: &published,
@@ -745,9 +739,8 @@ func (s *feedbackService) validateComments(revision string, values []string, exp
 }
 
 type validatedComment struct {
-	ID          int
-	Transaction map[string]any
-	Comment     map[string]any
+	ID      int
+	Comment map[string]any
 }
 
 func (s *feedbackService) validateInlineComments(revision string, values []string) ([]validatedComment, error) {
@@ -803,7 +796,7 @@ func (s *feedbackService) validateCommentRecords(revision string, values []strin
 		if comment == nil {
 			return nil, fmt.Errorf("comment %d has been removed", identifier)
 		}
-		result = append(result, validatedComment{ID: identifier, Transaction: transaction, Comment: comment})
+		result = append(result, validatedComment{ID: identifier, Comment: comment})
 	}
 	return result, nil
 }

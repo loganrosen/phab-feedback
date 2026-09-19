@@ -110,20 +110,24 @@ func TestRemoveCommentRequiresServerConfirmation(t *testing.T) {
 }
 
 func TestMarkDoneRetriesUncheckedResponse(t *testing.T) {
-	inline := transaction(1, "inline", 20, nil)
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": true})
 	service, transport := serviceWith(
 		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 		response(map[string]any{"payload": map[string]any{"isChecked": false}}),
-		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
+		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": false}}),
 	)
 	result, err := service.markDone("D1", []string{"20"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(result.Comments) != 1 || result.Comments[0].IsDone == nil || !*result.Comments[0].IsDone ||
-		result.Comments[0].Draft == nil || !*result.Comments[0].Draft {
+		result.Comments[0].Draft == nil || *result.Comments[0].Draft ||
+		result.Comments[0].Published == nil || !*result.Comments[0].Published {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+	if len(transport.requests) != 4 {
+		t.Fatalf("Done state required %d requests, want 4", len(transport.requests))
 	}
 	for _, request := range transport.requests[2:] {
 		if request.form(t).Get("op") != "done" || request.form(t).Get("id") != "20" {
