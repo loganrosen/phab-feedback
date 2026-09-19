@@ -192,8 +192,8 @@ type submissionResult struct {
 	RevisionID     int    `json:"revision_id"`
 	Action         string `json:"action"`
 	Outcome        string `json:"outcome"`
+	Attempted      bool   `json:"attempted"`
 	Submitted      bool   `json:"submitted"`
-	Skipped        bool   `json:"skipped,omitempty"`
 	OutcomeUnknown bool   `json:"outcome_unknown,omitempty"`
 	Redirect       string `json:"redirect,omitempty"`
 	Dialog         string `json:"dialog,omitempty"`

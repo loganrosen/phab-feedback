@@ -55,8 +55,11 @@ func renderText(command string, result any) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if value.Skipped {
-			return detailStyle.Render(fmt.Sprintf("No submission was needed on D%d: %s", value.RevisionID, value.Recovery)), nil
+		if value.Outcome == "not-attempted" {
+			return detailStyle.Render(fmt.Sprintf("Submission was not attempted on D%d: %s", value.RevisionID, value.Recovery)), nil
+		}
+		if value.Outcome == "no-effect" {
+			return detailStyle.Render(fmt.Sprintf("No publishable drafts were found on D%d.", value.RevisionID)), nil
 		}
 		if !value.Submitted {
 			return decisionStyle("unresolved").Render(fmt.Sprintf("Submission was not confirmed on D%d.", value.RevisionID)), nil
@@ -138,9 +141,9 @@ func renderInlineReply(result inlineReplyResult) string {
 	}
 	if result.Submission != nil && result.Submission.Submitted {
 		lines = append(lines, successStyle.Render(fmt.Sprintf("Submitted every pending draft you own on D%d.", result.Submission.RevisionID)))
-	} else if result.Submission != nil && result.Submission.Skipped {
+	} else if result.Submission != nil && result.Submission.Outcome == "not-attempted" {
 		lines = append(lines, detailStyle.Render(fmt.Sprintf(
-			"No submission was needed on D%d: %s", result.Submission.RevisionID, result.Submission.Recovery,
+			"Submission was not attempted on D%d: %s", result.Submission.RevisionID, result.Submission.Recovery,
 		)))
 	}
 	return strings.Join(lines, "\n")
@@ -192,9 +195,9 @@ func renderDone(result commentActionResult) string {
 	}
 	if result.Submission != nil && result.Submission.Submitted {
 		lines = append(lines, successStyle.Render(fmt.Sprintf("Submitted every pending draft you own on D%d.", result.RevisionID)))
-	} else if result.Submission != nil && result.Submission.Skipped {
+	} else if result.Submission != nil && result.Submission.Outcome == "not-attempted" {
 		lines = append(lines, detailStyle.Render(fmt.Sprintf(
-			"No submission was needed on D%d: %s", result.RevisionID, result.Submission.Recovery,
+			"Submission was not attempted on D%d: %s", result.RevisionID, result.Submission.Recovery,
 		)))
 	}
 	lines = append(lines, recovery...)
@@ -454,7 +457,7 @@ func renderBatch(result batchResult) string {
 		if result.Submission != nil && result.Submission.Recovery != "" {
 			reason = result.Submission.Recovery
 		}
-		return detailStyle.Render(fmt.Sprintf("No submission was needed on D%d: %s", result.RevisionID, reason))
+		return detailStyle.Render(fmt.Sprintf("Submission was not attempted on D%d: %s", result.RevisionID, reason))
 	case "partial", "failed":
 		if result.Failure == nil {
 			return decisionStyle("unresolved").Render(fmt.Sprintf("Batch stopped after an unreported failure on D%d.", result.RevisionID))

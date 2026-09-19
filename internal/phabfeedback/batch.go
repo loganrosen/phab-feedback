@@ -142,7 +142,7 @@ func (s *feedbackService) batch(manifest batchManifest, submit, dryRun bool) (ba
 	if !batchMutationsHaveDraft(result.Mutations) {
 		result.State = "unchanged"
 		result.Submission = &submissionResult{
-			RevisionID: revisionID, Action: "submit", Outcome: "no-effect", Skipped: true,
+			RevisionID: revisionID, Action: "submit", Outcome: "not-attempted",
 			Recovery: "The batch created no new drafts; existing revision drafts were not submitted.",
 		}
 		return result, nil

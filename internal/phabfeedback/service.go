@@ -3,6 +3,7 @@ package phabfeedback
 import (
 	"errors"
 	"fmt"
+	"html"
 	"maps"
 	"sort"
 	"strconv"
@@ -488,12 +489,15 @@ func (s *feedbackService) draftInlineReplyValidated(revisionID int, parent valid
 		}
 	}
 	savedPayload, ok := mapValue(saved["payload"])
-	savedInline, hasInline := savedPayload["inline"]
-	if !ok || !hasInline || savedInline == nil {
-		dialog := strings.TrimSpace(stringValue(savedPayload["dialog"]))
+	savedInline, inlineOK := mapValue(savedPayload["inline"])
+	savedID, idOK := intValue(savedInline["id"])
+	if !ok || !inlineOK || !idOK || savedID != replyID {
+		dialog := summarizeDialog(savedPayload["dialog"])
 		detail := "the save response did not include a rendered inline"
 		if dialog != "" {
 			detail = "Phabricator returned a dialog: " + dialog
+		} else if idOK {
+			detail = fmt.Sprintf("the save response identified inline %d instead of %d", savedID, replyID)
 		}
 		return result, &mutationResultError{
 			result: result,
@@ -536,9 +540,16 @@ func (s *feedbackService) reply(revision, parent, message string, done, submit b
 			result.FinalDone = doneResult.Comments[0].FinalDone
 		}
 		if doneErr != nil {
+			submissionStatus := ""
+			if submit {
+				submissionStatus = "; submission was not attempted"
+			}
 			return result, &mutationResultError{
 				result: result,
-				err:    fmt.Errorf("remote partial failure: reply %d was drafted but comment %d was not marked Done: %w", result.CreatedReplyID, comments[0].ID, doneErr),
+				err: fmt.Errorf(
+					"remote partial failure: reply %d was drafted but comment %d was not marked Done: %w%s",
+					result.CreatedReplyID, comments[0].ID, doneErr, submissionStatus,
+				),
 			}
 		}
 	}
@@ -632,6 +643,12 @@ func (s *feedbackService) markDone(revision string, targets []string, submit boo
 	}
 	result, err := s.markDoneValidated(revisionID, comments)
 	if err != nil {
+		if submit {
+			return result, &mutationResultError{
+				result: result,
+				err:    fmt.Errorf("%w; submission was not attempted", err),
+			}
+		}
 		return result, err
 	}
 	if !submit {
@@ -639,8 +656,8 @@ func (s *feedbackService) markDone(revision string, targets []string, submit boo
 	}
 	if !commentActionsHaveDraft(result.Comments) {
 		result.Submission = &submissionResult{
-			RevisionID: revisionID, Action: "submit", Outcome: "no-effect", Skipped: true,
-			Recovery: "All target comments were already published Done; no submission was needed.",
+			RevisionID: revisionID, Action: "submit", Outcome: "not-attempted",
+			Recovery: "All target comments were already published Done; no submission was attempted, so existing unrelated drafts remain unpublished.",
 		}
 		return result, nil
 	}
@@ -823,11 +840,17 @@ func (s *feedbackService) submit(revision string) (submissionResult, error) {
 	if err != nil {
 		return submissionResult{}, err
 	}
-	result := submissionResult{RevisionID: revisionID, Action: "submit", Outcome: "unknown"}
+	result := submissionResult{RevisionID: revisionID, Action: "submit", Outcome: "not-attempted"}
 	csrf, err := s.web.csrf()
 	if err != nil {
-		return result, err
+		result.Recovery = "Submission was not attempted because the CSRF token could not be loaded."
+		return result, &mutationResultError{
+			result: result,
+			err:    fmt.Errorf("%s: %w", result.Recovery, err),
+		}
 	}
+	result.Attempted = true
+	result.Outcome = "unknown"
 	response, err := s.web.post(fmt.Sprintf("/differential/revision/edit/%d/comment/", revisionID), map[string]string{
 		"__csrf__": csrf, "__form__": "1", "editengine.actions": "[]", "comment": "", "comment_metadata": "{}", "__ajax__": "true",
 	})
@@ -844,10 +867,9 @@ func (s *feedbackService) submit(revision string) (submissionResult, error) {
 	}
 	redirect := strings.TrimSpace(stringValue(payload["redirect"]))
 	if redirect == "" {
-		result.Dialog = strings.TrimSpace(stringValue(payload["dialog"]))
-		if strings.Contains(strings.ToLower(result.Dialog), "no effect") {
+		result.Dialog = summarizeDialog(payload["dialog"])
+		if isEmptyCommentDialog(result.Dialog) {
 			result.Outcome = "no-effect"
-			result.Skipped = true
 			result.Recovery = "No publishable drafts were found."
 			return result, nil
 		}
@@ -870,6 +892,47 @@ func (s *feedbackService) submit(revision string) (submissionResult, error) {
 	result.Submitted = true
 	result.Redirect = redirect
 	return result, nil
+}
+
+func isEmptyCommentDialog(dialog string) bool {
+	normalized := strings.ToLower(dialog)
+	return strings.Contains(normalized, "empty comment") ||
+		strings.Contains(normalized, "you can not post an empty comment") ||
+		strings.Contains(normalized, "you cannot post an empty comment")
+}
+
+func summarizeDialog(value any) string {
+	raw := strings.TrimSpace(stringValue(value))
+	if raw == "" {
+		return ""
+	}
+	var text strings.Builder
+	inTag := false
+	for _, character := range raw {
+		switch character {
+		case '<':
+			if !inTag {
+				text.WriteByte(' ')
+			}
+			inTag = true
+		case '>':
+			if inTag {
+				inTag = false
+				text.WriteByte(' ')
+			}
+		default:
+			if !inTag {
+				text.WriteRune(character)
+			}
+		}
+	}
+	summary := safe(strings.Join(strings.Fields(html.UnescapeString(text.String())), " "))
+	const maxDialogRunes = 500
+	runes := []rune(summary)
+	if len(runes) > maxDialogRunes {
+		summary = string(runes[:maxDialogRunes-3]) + "..."
+	}
+	return summary
 }
 
 func (s *feedbackService) requestAIReview(revision string) (aiReviewResult, error) {

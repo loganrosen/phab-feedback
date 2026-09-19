@@ -62,9 +62,12 @@ approval. Prefer message files or stdin:
 - Before any submission, warn that Phabricator publishes every eligible pending
   inline draft owned by the current user on that revision, including unrelated
   drafts created earlier in the browser or by another command.
-- Do not override Phabricator submission warnings. If the CLI reports a dialog,
-  surface it to the user. When an inline is still being edited, have the user
-  save or close that editor, re-inspect pending drafts, and approve a retry.
+- Do not override Phabricator submission warnings. `Empty Comment` is the
+  benign no-drafts outcome; treat every other dialog, including
+  `Action(s) With No Effect`, as blocked publication. Surface the bounded
+  plain-text dialog to the user. When an inline is still being edited, have the
+  user save or close that editor, re-inspect pending drafts, and approve a
+  retry.
 - Use `D123 reply ... --submit` only when combined creation and publication
   were explicitly approved.
 - Use `D123 reply ... --done` only when the reply and Done action were both
@@ -105,9 +108,9 @@ the complete manifest and all target comments before mutation, creates drafts
 in order, submits at most once, and reports unavoidable remote partial failures.
 The final submission is revision-wide for the current user, not scoped to the
 manifest. If all requested Done states are already published and the batch
-creates no new draft, the CLI skips submission so it does not publish unrelated
-drafts; use the standalone `submit` command only after separate approval if
-those existing drafts should be published.
+creates no new draft, the CLI reports `outcome: "not-attempted"` so it does not
+publish unrelated drafts; use the standalone `submit` command only after
+separate approval if those existing drafts should be published.
 
 ## Isolate Mozilla-only actions
 

@@ -240,20 +240,24 @@ every `--submit` form publish all eligible pending inline drafts owned by that
 user on the revision, including drafts created earlier in the browser or by
 another command. Inspect existing drafts before approving publication.
 The CLI only reports publication when Phabricator returns its success redirect.
-Server dialogs and warnings are surfaced as failures and are never
-automatically overridden. If submission reports an inline still being edited,
-save or close that editor in Phabricator and retry after reviewing every
-pending draft. A `done --submit` or batch submission is skipped when every
-target was already published Done and the command created no new drafts; use
-the standalone `submit` command if existing unrelated drafts should still be
-published.
+An upstream `Empty Comment` dialog means there was nothing to publish and is
+reported as `outcome: "no-effect"`. All other server dialogs and warnings,
+including `Action(s) With No Effect` confirmations, are surfaced as failures and
+are never automatically overridden. If submission reports an inline still
+being edited, save or close that editor in Phabricator and retry after reviewing
+every pending draft. A `done --submit` or batch submission is not attempted
+when every target was already published Done and the command created no new
+drafts; use the standalone `submit` command if existing unrelated drafts should
+still be published.
 
 Mutation JSON includes the revision and action plus operation-specific fields
 such as `created_reply_id`, `parent_comment_id`, `draft`, `published`, and
-`final_done`. Submission results include `outcome`, `submitted`, and, when
-applicable, `dialog`, `outcome_unknown`, or `recovery`. Batch dry-run entries
-instead use `planned: true`; they do not claim draft, publication, or final
-Done state before mutation.
+`final_done`. Submission results include `outcome`, `attempted`, `submitted`,
+and, when applicable, a bounded plain-text `dialog`, `outcome_unknown`, or
+`recovery`. `outcome: "not-attempted"` distinguishes a client-side safety skip
+from the server-confirmed `no-effect` outcome. Batch dry-run entries instead
+use `planned: true`; they do not claim draft, publication, or final Done state
+before mutation.
 If a Done retry fails, `observed_checked` and `observed_draft_state` describe
 only the last confirmed response; normal result fields remain absent because
 the final remote outcome is unknown. Multi-target Done failures list later
@@ -318,8 +322,8 @@ That final submission is not scoped to the manifest. It publishes every
 eligible pending inline draft owned by the current user on the revision,
 including pre-existing browser drafts.
 If every requested Done state is already published and the batch creates no
-new draft, the CLI skips the final submission and reports `state: "unchanged"`
-rather than publishing unrelated drafts.
+new draft, the CLI does not attempt the final submission and reports
+`state: "unchanged"` rather than publishing unrelated drafts.
 
 Validation failures never mutate the revision. Phabricator applies the final
 published inline transactions together, but the preceding draft-creation calls

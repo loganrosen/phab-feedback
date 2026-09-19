@@ -168,7 +168,9 @@ func TestBatchDraftsInOrderAndSubmitsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != "published" || len(result.Mutations) != 2 || result.Mutations[0].Action != "reply" || result.Mutations[1].Action != "done" {
+	if result.State != "published" || result.Submission == nil || !result.Submission.Attempted ||
+		len(result.Mutations) != 2 || result.Mutations[0].Action != "reply" ||
+		result.Mutations[1].Action != "done" {
 		t.Fatalf("unexpected batch result: %#v", result)
 	}
 	if transport.requests[2].form(t).Get("op") != "reply" ||
@@ -223,7 +225,8 @@ func TestBatchSkipsSubmissionWhenNoDraftWasCreated(t *testing.T) {
 		Actions:  []batchManifestAction{{CommentID: 20, Done: &done}},
 	}, true, false)
 	if err != nil || result.State != "unchanged" || result.Submission == nil ||
-		!result.Submission.Skipped || result.Submission.Submitted {
+		result.Submission.Attempted || result.Submission.Outcome != "not-attempted" ||
+		result.Submission.Submitted {
 		t.Fatalf("unexpected batch result: %#v %v", result, err)
 	}
 	for _, request := range transport.requests {
@@ -263,6 +266,9 @@ func TestReplyDoneFailureReportsDraftedReplyAndSkipsSubmit(t *testing.T) {
 	result, err := service.reply("D1", "20", "reply", true, true)
 	if err == nil || result.CreatedReplyID != 55 || !result.Draft {
 		t.Fatalf("unexpected partial result: %#v %v", result, err)
+	}
+	if !strings.Contains(err.Error(), "submission was not attempted") {
+		t.Fatalf("missing submission status: %v", err)
 	}
 	for _, request := range transport.requests {
 		if strings.Contains(request.target, "/differential/revision/edit/1/comment/") {
@@ -309,7 +315,8 @@ func TestDoneSubmitPublishesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Submission == nil || !result.Submission.Submitted || boolPointerValue(result.Comments[0].Draft) || !boolPointerValue(result.Comments[0].Published) {
+	if result.Submission == nil || !result.Submission.Attempted || !result.Submission.Submitted ||
+		boolPointerValue(result.Comments[0].Draft) || !boolPointerValue(result.Comments[0].Published) {
 		t.Fatalf("unexpected Done result: %#v", result)
 	}
 	submits := 0

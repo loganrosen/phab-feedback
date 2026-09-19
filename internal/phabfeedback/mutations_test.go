@@ -38,7 +38,7 @@ func TestReplyDoneAndSubmissionPayloads(t *testing.T) {
 		t.Fatalf("missing CSRF header: %v", transport.requests[2].headers)
 	}
 	submitted, err := service.submit("D1")
-	if err != nil || !submitted.Submitted {
+	if err != nil || !submitted.Attempted || !submitted.Submitted || submitted.Outcome != "submitted" {
 		t.Fatalf("submit: %#v %v", submitted, err)
 	}
 	if transport.requests[4].form(t).Get("editengine.actions") != "[]" {
@@ -57,7 +57,8 @@ func TestSubmitRequiresRedirectConfirmation(t *testing.T) {
 		{
 			name: "dialog",
 			payload: map[string]any{
-				"dialog": "An inline comment is still being edited.",
+				"dialog": `<div class="aphront-dialog-head">Unsaved Inline</div>
+					<div>An inline comment is still being edited.</div>`,
 			},
 			wantOutcome: "rejected",
 			wantError:   "unsaved inline comment",
@@ -77,23 +78,64 @@ func TestSubmitRequiresRedirectConfirmation(t *testing.T) {
 				response(map[string]any{"payload": test.payload}),
 			)
 			result, err := service.submit("D1")
-			if err == nil || result.Submitted || result.Outcome != test.wantOutcome ||
+			if err == nil || !result.Attempted || result.Submitted || result.Outcome != test.wantOutcome ||
 				result.OutcomeUnknown != test.wantUnknown ||
 				!strings.Contains(err.Error(), test.wantError) {
 				t.Fatalf("unexpected submission result: %#v %v", result, err)
+			}
+			if strings.Contains(result.Dialog, "<") {
+				t.Fatalf("dialog markup was not removed: %q", result.Dialog)
 			}
 		})
 	}
 }
 
-func TestSubmitTreatsNoEffectDialogAsSkipped(t *testing.T) {
+func TestSubmitTreatsEmptyCommentDialogAsNoEffect(t *testing.T) {
 	service, _ := serviceWith(
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
-		response(map[string]any{"payload": map[string]any{"dialog": "No Effect: there are no changes to apply."}}),
+		response(map[string]any{"payload": map[string]any{
+			"dialog": `<div class="aphront-dialog-head">Empty Comment</div>
+				<div>You can not post an empty comment.</div>`,
+		}}),
 	)
 	result, err := service.submit("D1")
-	if err != nil || result.Submitted || !result.Skipped || result.Outcome != "no-effect" {
+	if err != nil || !result.Attempted || result.Submitted || result.Outcome != "no-effect" ||
+		!strings.Contains(result.Dialog, "Empty Comment") {
 		t.Fatalf("unexpected submission result: %#v %v", result, err)
+	}
+}
+
+func TestSubmitRejectsActionsWithNoEffectConfirmation(t *testing.T) {
+	service, _ := serviceWith(
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{
+			"dialog": `<div class="aphront-dialog-head">1 Action(s) With No Effect</div>
+				<div>Some of your actions have no effect.</div>
+				<button>Apply Remaining Actions</button>`,
+		}}),
+	)
+	result, err := service.submit("D1")
+	if err == nil || !result.Attempted || result.Submitted || result.Outcome != "rejected" ||
+		!strings.Contains(result.Dialog, "Apply Remaining Actions") {
+		t.Fatalf("unexpected submission result: %#v %v", result, err)
+	}
+}
+
+func TestSubmitReportsCSRFFailureAsNotAttempted(t *testing.T) {
+	service, _ := serviceWith(errors.New("csrf failed"))
+	result, err := service.submit("D1")
+	if err == nil || result.Attempted || result.Submitted || result.Outcome != "not-attempted" ||
+		!strings.Contains(result.Recovery, "CSRF") {
+		t.Fatalf("unexpected submission result: %#v %v", result, err)
+	}
+}
+
+func TestDialogSummaryStripsMarkupAndBoundsLength(t *testing.T) {
+	dialog := `<div>Warning &amp; details</div><p>` + strings.Repeat("x", 600) + `</p>`
+	result := summarizeDialog(dialog)
+	if strings.Contains(result, "<") || !strings.Contains(result, "Warning & details") ||
+		len([]rune(result)) > 500 || !strings.HasSuffix(result, "...") {
+		t.Fatalf("unexpected dialog summary: %q", result)
 	}
 }
 
@@ -112,6 +154,16 @@ func TestReplySaveRequiresInlineConfirmation(t *testing.T) {
 			name:    "missing inline",
 			payload: map[string]any{},
 			want:    "did not include a rendered inline",
+		},
+		{
+			name:    "empty inline",
+			payload: map[string]any{"inline": map[string]any{}},
+			want:    "did not include a rendered inline",
+		},
+		{
+			name:    "wrong inline",
+			payload: map[string]any{"inline": map[string]any{"id": 56}},
+			want:    "identified inline 56 instead of 55",
 		},
 	}
 	for _, test := range tests {
@@ -148,18 +200,20 @@ func TestReplySubmissionDialogPreservesDraftState(t *testing.T) {
 	}
 }
 
-func TestReplySubmissionNoEffectIsPartialFailure(t *testing.T) {
+func TestReplySubmissionWarningIsPartialFailure(t *testing.T) {
 	inline := transaction(1, "inline", 20, nil)
 	service, _ := serviceWith(
 		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
 		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
-		response(map[string]any{"payload": map[string]any{"dialog": "No Effect: there are no changes to apply."}}),
+		response(map[string]any{"payload": map[string]any{
+			"dialog": `<div>1 Action(s) With No Effect</div><button>Apply Remaining Actions</button>`,
+		}}),
 	)
 	result, err := service.reply("D1", "20", "reply", false, true)
 	if err == nil || !result.Draft || result.Published || result.Submission == nil ||
-		!result.Submission.Skipped || !strings.Contains(err.Error(), "no publishable effect") {
+		result.Submission.Outcome != "rejected" || !strings.Contains(err.Error(), "submission failed") {
 		t.Fatalf("unexpected reply result: %#v %v", result, err)
 	}
 }
@@ -398,6 +452,19 @@ func TestMarkDoneReportsUnattemptedTargets(t *testing.T) {
 	}
 }
 
+func TestDoneFailureReportsSubmissionWasNotAttempted(t *testing.T) {
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	service, _ := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		errors.New("Done failed"),
+	)
+	_, err := service.markDone("D1", []string{"20"}, true)
+	if err == nil || !strings.Contains(err.Error(), "submission was not attempted") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestDoneSubmitSkipsWhenTargetsAreAlreadyPublished(t *testing.T) {
 	inline := transaction(1, "inline", 20, map[string]any{"isDone": true})
 	service, transport := serviceWith(
@@ -407,8 +474,10 @@ func TestDoneSubmitSkipsWhenTargetsAreAlreadyPublished(t *testing.T) {
 		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": false}}),
 	)
 	result, err := service.markDone("D1", []string{"20"}, true)
-	if err != nil || result.Submission == nil || !result.Submission.Skipped ||
-		result.Submission.Submitted || !boolPointerValue(result.Comments[0].Published) {
+	if err != nil || result.Submission == nil || result.Submission.Attempted ||
+		result.Submission.Outcome != "not-attempted" || result.Submission.Submitted ||
+		!boolPointerValue(result.Comments[0].Published) ||
+		!strings.Contains(result.Submission.Recovery, "unrelated drafts remain unpublished") {
 		t.Fatalf("unexpected Done result: %#v %v", result, err)
 	}
 	for _, request := range transport.requests {

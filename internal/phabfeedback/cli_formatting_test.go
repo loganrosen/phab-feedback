@@ -265,17 +265,51 @@ func TestDoneFailureTextPreservesEarlierConfirmedComments(t *testing.T) {
 	}
 }
 
-func TestBatchUnchangedTextExplainsSkippedSubmission(t *testing.T) {
+func TestBatchUnchangedTextExplainsUnattemptedSubmission(t *testing.T) {
 	got := ansi.Strip(renderBatch(batchResult{
 		RevisionID: 12,
 		State:      "unchanged",
 		Submission: &submissionResult{
+			Outcome:  "not-attempted",
 			Recovery: "The batch created no new drafts; existing revision drafts were not submitted.",
 		},
 	}))
-	want := "No submission was needed on D12: The batch created no new drafts; existing revision drafts were not submitted."
+	want := "Submission was not attempted on D12: The batch created no new drafts; existing revision drafts were not submitted."
 	if got != want {
 		t.Fatalf("text output = %q, want %q", got, want)
+	}
+}
+
+func TestSubmissionTextDistinguishesNoEffectAndNotAttempted(t *testing.T) {
+	tests := []struct {
+		name   string
+		result submissionResult
+		want   string
+	}{
+		{
+			name:   "server no effect",
+			result: submissionResult{RevisionID: 12, Outcome: "no-effect", Attempted: true},
+			want:   "No publishable drafts were found on D12.",
+		},
+		{
+			name: "not attempted",
+			result: submissionResult{
+				RevisionID: 12, Outcome: "not-attempted",
+				Recovery: "No new drafts were created.",
+			},
+			want: "Submission was not attempted on D12: No new drafts were created.",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := renderText("submit", test.result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ansi.Strip(got) != test.want {
+				t.Fatalf("text output = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
