@@ -1,8 +1,12 @@
 package phabfeedback
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,8 +77,68 @@ func TestBatchDryRunReportsPlanWithoutWebMutation(t *testing.T) {
 	if result.State != "planned" || !result.DryRun || !result.Submit || len(result.Mutations) != 2 {
 		t.Fatalf("unexpected dry-run result: %#v", result)
 	}
+	for _, mutation := range result.Mutations {
+		if !mutation.Planned || mutation.Draft != nil || mutation.Published != nil || mutation.FinalDone != nil {
+			t.Fatalf("dry-run reported observed state: %#v", mutation)
+		}
+	}
 	if len(transport.requests) != 1 {
 		t.Fatalf("dry-run made mutation requests: %d", len(transport.requests))
+	}
+}
+
+func TestBatchDoneFailureReportsRecoveryAndSkipsSubmit(t *testing.T) {
+	reply := "reply"
+	done := true
+	first := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	second := transaction(2, "inline", 21, map[string]any{"isDone": true})
+	service, transport := serviceWith(
+		conduitResult(map[string]any{"data": []any{first, second}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{}}),
+		response(map[string]any{"payload": map[string]any{"isChecked": false, "draftState": true}}),
+		errors.New("retry failed"),
+	)
+	result, err := service.batch(batchManifest{
+		Revision: "D1",
+		Actions: []batchManifestAction{
+			{CommentID: 20, Reply: &reply},
+			{CommentID: 21, Done: &done},
+		},
+	}, true, false)
+	if err == nil || result.State != "partial" || result.Failure == nil {
+		t.Fatalf("unexpected batch failure: %#v %v", result, err)
+	}
+	if result.Failure.CompletedMutations != 1 || len(result.Mutations) != 2 ||
+		!strings.Contains(result.Mutations[1].Recovery, "pending undo-Done draft") {
+		t.Fatalf("unexpected partial details: %#v", result)
+	}
+	for _, request := range transport.requests {
+		if strings.Contains(request.target, "/differential/revision/edit/1/comment/") {
+			t.Fatal("submitted after a mid-batch Done failure")
+		}
+	}
+}
+
+func TestBatchReplyFailureOmitsUnobservedState(t *testing.T) {
+	reply := "reply"
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	service, _ := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		errors.New("reply outcome unknown"),
+	)
+	result, err := service.batch(batchManifest{
+		Revision: "D1",
+		Actions:  []batchManifestAction{{CommentID: 20, Reply: &reply}},
+	}, false, false)
+	if err == nil || len(result.Mutations) != 1 {
+		t.Fatalf("unexpected result: %#v %v", result, err)
+	}
+	mutation := result.Mutations[0]
+	if mutation.Draft != nil || mutation.Published != nil {
+		t.Fatalf("unknown reply outcome reported definite state: %#v", mutation)
 	}
 }
 
@@ -238,7 +302,67 @@ func TestVerifyChecksReplyParentAndDoneState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Verified || !result.Replies[0].Linked || !result.Done[0].FinalDone {
+	if !result.Verified || !result.Replies[0].Linked || !result.Done[0].ConduitIsDone ||
+		!result.Done[0].Ambiguous || len(result.Limitations) != 1 {
 		t.Fatalf("unexpected verification: %#v", result)
+	}
+}
+
+func TestVerifyReportsMissingReplyWrongParentAndUncheckedDone(t *testing.T) {
+	root := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	otherParent := transaction(2, "inline", 21, map[string]any{"isDone": false})
+	reply := transaction(3, "inline", 55, map[string]any{
+		"isDone": false, "replyToCommentPHID": "PHID-CMT-21",
+	})
+	service, _ := serviceWith(
+		conduitResult(map[string]any{"data": []any{root, otherParent, reply}, "cursor": map[string]any{"after": nil}}),
+	)
+	result, err := service.verify(
+		"D1",
+		[]replyExpectation{{ReplyID: 55, ParentID: 20}, {ReplyID: 99, ParentID: 20}},
+		[]string{"20"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Verified || result.Replies[0].Linked || result.Replies[1].Found || result.Done[0].ConduitIsDone {
+		t.Fatalf("unexpected verification: %#v", result)
+	}
+}
+
+func TestVerifyCLIExitsNonzeroAndPrintsStructuredFailure(t *testing.T) {
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/transaction.search" {
+			http.NotFound(writer, request)
+			return
+		}
+		_, _ = writer.Write(conduitResult(map[string]any{
+			"data": []any{inline}, "cursor": map[string]any{"after": nil},
+		}))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("PHAB_FEEDBACK_HOST", server.URL)
+	t.Setenv("PHAB_FEEDBACK_TOKEN", "token")
+	t.Setenv("PHAB_FEEDBACK_ARCRC", filepath.Join(t.TempDir(), "missing-arcrc"))
+
+	var stdout, stderr bytes.Buffer
+	status := Run(
+		[]string{"D1", "verify", "--done", "20", "--format", "json"},
+		strings.NewReader(""), &stdout, &stderr,
+	)
+	if status != 1 {
+		t.Fatalf("status = %d, want 1", status)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %q", stderr.String())
+	}
+	body, err := io.ReadAll(&stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"verified": false`) ||
+		!strings.Contains(string(body), `"conduit_is_done": false`) {
+		t.Fatalf("unexpected output: %s", body)
 	}
 }

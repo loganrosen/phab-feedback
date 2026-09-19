@@ -78,10 +78,11 @@ cookies still in Firefox's live write-ahead log. Firefox can remain open during
 discovery; the database snapshot is retried if Firefox changes it while it is
 being copied.
 
-`--firefox-profile PATH` selects only that profile. `--firefox-cookies` keeps
-the explicit all-profile discovery mode for scripts and diagnostics. Explicit
-session-cookie environment values take precedence over explicit profile
-selection, which takes precedence over automatic discovery:
+`--firefox-profile PATH` restricts discovery to that profile.
+`--firefox-cookies` requests direct Firefox discovery diagnostics instead of
+the automatic-fallback error wrapper. Explicit session-cookie environment
+values take precedence over explicit profile selection, which takes precedence
+over automatic discovery:
 
 ```bash
 phab-feedback D123 submit
@@ -167,7 +168,7 @@ phab-feedback D123 done 456 457 --submit
 # Publish all pending replies and Done changes in a separate action.
 phab-feedback D123 submit
 
-# Verify that a published reply has the expected parent and that comments are Done.
+# Verify visible reply linkage and Conduit's Done indicator.
 phab-feedback D123 verify --reply 901:456 --done 456 --done 457
 
 # Remove an accidental top-level comment after the CLI validates its type.
@@ -224,12 +225,28 @@ eligible inline drafts before applying their Done-state transition and commits
 the transaction set together. Draft preparation still requires separate web
 requests, so a failure before submission can leave unpublished drafts behind.
 The command exits nonzero and its text or JSON output identifies any mutation
-whose remote state may need inspection.
+whose remote state may need inspection. If a Done retry is interrupted, the
+output identifies whether the first confirmed toggle created a pending
+undo-Done draft or cleared a pending Done draft and gives the required recovery
+step.
+
+Phabricator submission is revision-wide for the current user: `submit` and
+every `--submit` form publish all eligible pending inline drafts owned by that
+user on the revision, including drafts created earlier in the browser or by
+another command. Inspect existing drafts before approving publication.
 
 Mutation JSON includes the revision and action plus operation-specific fields
 such as `created_reply_id`, `parent_comment_id`, `draft`, `published`, and
-`final_done`. The `verify` command exits nonzero when a requested reply is
-missing, its direct parent does not match, or a requested comment is not Done.
+`final_done`. Batch dry-run entries instead use `planned: true`; they do not
+claim draft, publication, or final Done state before mutation.
+
+The `verify` command exits nonzero when a requested reply is missing, its direct
+parent does not match, or Conduit reports `isDone: false`. Reply verification
+checks visibility and direct-parent linkage but does not independently prove
+publication. Done verification reports `conduit_is_done` and
+`ambiguous_pending_undo`: upstream Conduit represents both published `DONE` and
+a pending `UNDRAFT` transition as `isDone: true`, so it cannot prove that no
+pending undo-Done draft exists.
 
 ### Batch action manifests
 
@@ -273,6 +290,10 @@ all draft operations succeed:
 phab-feedback batch actions.json
 phab-feedback batch actions.json --submit --format json
 ```
+
+That final submission is not scoped to the manifest. It publishes every
+eligible pending inline draft owned by the current user on the revision,
+including pre-existing browser drafts.
 
 Validation failures never mutate the revision. Phabricator applies the final
 published inline transactions together, but the preceding draft-creation calls
@@ -321,7 +342,7 @@ or `go run` as a non-persistent fallback.
   configuration, Conduit authentication, or the browser session.
 - If a web command reports that it needs a session, set
   `PHAB_FEEDBACK_SESSION_COOKIE` or use a logged-in Firefox profile with
-  `--firefox-cookies`.
+  `--firefox-profile`.
 - If Conduit commands work but a browser-only mutation fails after a server
   upgrade, the internal endpoint may have changed.
 

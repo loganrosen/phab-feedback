@@ -118,7 +118,14 @@ func renderInlineReply(result inlineReplyResult) string {
 		state, replyID, result.ParentCommentID, result.RevisionID,
 	))}
 	if result.Done != nil {
-		lines = append(lines, successStyle.Render(fmt.Sprintf("Marked comment #%d Done.", result.ParentCommentID)))
+		if result.Done.Recovery != "" {
+			lines = append(lines, decisionStyle("unresolved").Render(fmt.Sprintf(
+				"Done action for comment #%d requires recovery: %s",
+				result.ParentCommentID, result.Done.Recovery,
+			)))
+		} else {
+			lines = append(lines, successStyle.Render(fmt.Sprintf("Marked comment #%d Done.", result.ParentCommentID)))
+		}
 	}
 	if result.Submission != nil && result.Submission.Submitted {
 		lines = append(lines, successStyle.Render(fmt.Sprintf("Submitted pending drafts on D%d.", result.Submission.RevisionID)))
@@ -130,11 +137,29 @@ func renderDone(result commentActionResult) string {
 	if len(result.Comments) == 0 {
 		return decisionStyle("unresolved").Render(fmt.Sprintf("No Done changes were confirmed on D%d.", result.RevisionID))
 	}
-	outcome := "Done as drafts"
-	if result.Submission != nil && result.Submission.Submitted {
-		outcome = "Done and submitted pending drafts"
+	confirmed := make([]string, 0, len(result.Comments))
+	recovery := make([]string, 0)
+	for _, comment := range result.Comments {
+		if comment.Recovery != "" {
+			recovery = append(recovery, decisionStyle("unresolved").Render(fmt.Sprintf(
+				"Done action for comment #%d on D%d requires recovery: %s",
+				comment.CommentID, result.RevisionID, comment.Recovery,
+			)))
+			continue
+		}
+		confirmed = append(confirmed, fmt.Sprintf("#%d", comment.CommentID))
 	}
-	return renderCommentAction(result, "Marked", outcome)
+	lines := make([]string, 0, 2)
+	if len(confirmed) > 0 {
+		lines = append(lines, successStyle.Render(fmt.Sprintf(
+			"Confirmed %s Done on D%d.", strings.Join(confirmed, ", "), result.RevisionID,
+		)))
+	}
+	if result.Submission != nil && result.Submission.Submitted {
+		lines = append(lines, successStyle.Render(fmt.Sprintf("Submitted pending drafts on D%d.", result.RevisionID)))
+	}
+	lines = append(lines, recovery...)
+	return strings.Join(lines, "\n")
 }
 
 func renderCommentAction(result commentActionResult, verb, outcome string) string {
@@ -376,9 +401,12 @@ func renderBatch(result batchResult) string {
 	case "published":
 		return successStyle.Render(fmt.Sprintf("Published %d batch mutations on D%d with one submission.", len(result.Mutations), result.RevisionID))
 	case "partial", "failed":
+		if result.Failure == nil {
+			return decisionStyle("unresolved").Render(fmt.Sprintf("Batch stopped after an unreported failure on D%d.", result.RevisionID))
+		}
 		return decisionStyle("unresolved").Render(fmt.Sprintf(
-			"Batch stopped at action %d (%s) after %d reported mutations on D%d.",
-			result.Failure.Index, result.Failure.Action, len(result.Mutations), result.RevisionID,
+			"Batch stopped at action %d (%s) after %d completed mutations on D%d.",
+			result.Failure.Index, result.Failure.Action, result.Failure.CompletedMutations, result.RevisionID,
 		))
 	default:
 		return successStyle.Render(fmt.Sprintf("Created %d batch mutation drafts on D%d.", len(result.Mutations), result.RevisionID))
@@ -388,7 +416,7 @@ func renderBatch(result batchResult) string {
 func renderVerification(result verificationResult) string {
 	if result.Verified {
 		return successStyle.Render(fmt.Sprintf(
-			"Verified %d replies and %d Done states on D%d.",
+			"Verified %d reply links and %d Conduit Done indicators on D%d.",
 			len(result.Replies), len(result.Done), result.RevisionID,
 		))
 	}
@@ -399,7 +427,7 @@ func renderVerification(result verificationResult) string {
 		}
 	}
 	for _, done := range result.Done {
-		if !done.Found || !done.FinalDone {
+		if !done.Found || !done.ConduitIsDone {
 			failed++
 		}
 	}

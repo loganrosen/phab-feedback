@@ -224,6 +224,7 @@ type commentAction struct {
 	FinalDone *bool  `json:"final_done,omitempty"`
 	Draft     *bool  `json:"draft,omitempty"`
 	Published *bool  `json:"published,omitempty"`
+	Recovery  string `json:"recovery,omitempty"`
 	Helpful   *bool  `json:"helpful,omitempty"`
 	Message   any    `json:"message,omitempty"`
 }
@@ -272,16 +273,19 @@ type batchMutation struct {
 	CommentID       int    `json:"comment_id"`
 	ParentCommentID int    `json:"parent_comment_id,omitempty"`
 	CreatedReplyID  int    `json:"created_reply_id,omitempty"`
+	Planned         bool   `json:"planned,omitempty"`
 	Saved           bool   `json:"saved,omitempty"`
-	Draft           bool   `json:"draft"`
-	Published       bool   `json:"published"`
+	Draft           *bool  `json:"draft,omitempty"`
+	Published       *bool  `json:"published,omitempty"`
 	FinalDone       *bool  `json:"final_done,omitempty"`
+	Recovery        string `json:"recovery,omitempty"`
 }
 
 type batchFailure struct {
-	Index  int    `json:"index"`
-	Action string `json:"action"`
-	Error  string `json:"error"`
+	Index              int    `json:"index"`
+	Action             string `json:"action"`
+	CompletedMutations int    `json:"completed_mutations"`
+	Error              string `json:"error"`
 }
 
 type batchResult struct {
@@ -305,19 +309,20 @@ type replyVerification struct {
 	ParentCommentID int  `json:"parent_comment_id"`
 	Found           bool `json:"found"`
 	Linked          bool `json:"linked"`
-	Published       bool `json:"published"`
 }
 
 type doneVerification struct {
-	CommentID int  `json:"comment_id"`
-	Found     bool `json:"found"`
-	FinalDone bool `json:"final_done"`
+	CommentID     int  `json:"comment_id"`
+	Found         bool `json:"found"`
+	ConduitIsDone bool `json:"conduit_is_done"`
+	Ambiguous     bool `json:"ambiguous_pending_undo"`
 }
 
 type verificationResult struct {
-	RevisionID int                 `json:"revision_id"`
-	Action     string              `json:"action"`
-	Verified   bool                `json:"verified"`
-	Replies    []replyVerification `json:"replies"`
-	Done       []doneVerification  `json:"done"`
+	RevisionID  int                 `json:"revision_id"`
+	Action      string              `json:"action"`
+	Verified    bool                `json:"verified"`
+	Replies     []replyVerification `json:"replies"`
+	Done        []doneVerification  `json:"done"`
+	Limitations []string            `json:"limitations,omitempty"`
 }

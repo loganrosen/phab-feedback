@@ -1,6 +1,6 @@
 ---
 name: phab-feedback
-description: Discover, inspect, verify, and act on Phabricator or Phorge Differential feedback with the phab-feedback CLI. Use for reviewer or author revision queues, revision summaries, unresolved inline threads, chronological timelines, exact general or inline comment IDs, inline-thread reply drafts, batch reply and Done manifests, accidental top-level comment removal, explicit draft submission, published-state verification, and Mozilla Review Helper ratings or AI review requests. Trigger when an agent needs deterministic review metadata, must classify feedback across diff versions, needs to triage review work, or is ready to perform a user-approved feedback mutation.
+description: Discover, inspect, verify, and act on Phabricator or Phorge Differential feedback with the phab-feedback CLI. Use for reviewer or author revision queues, revision summaries, unresolved inline threads, chronological timelines, exact general or inline comment IDs, inline-thread reply drafts, batch reply and Done manifests, accidental top-level comment removal, explicit draft submission, reply-link and visible Done verification, and Mozilla Review Helper ratings or AI review requests. Trigger when an agent needs deterministic review metadata, must classify feedback across diff versions, needs to triage review work, or is ready to perform a user-approved feedback mutation.
 ---
 
 # Phabricator feedback
@@ -59,6 +59,9 @@ approval. Prefer message files or stdin:
 - Treat `remove-comment` as an immediate removal after type validation.
 - Treat `reply` and `done` as draft creation.
 - Run `D123 submit` only after separate approval to publish all pending drafts.
+- Before any submission, warn that Phabricator publishes every eligible pending
+  inline draft owned by the current user on that revision, including unrelated
+  drafts created earlier in the browser or by another command.
 - Use `D123 reply ... --submit` only when combined creation and publication
   were explicitly approved.
 - Use `D123 reply ... --done` only when the reply and Done action were both
@@ -94,6 +97,8 @@ Run without `--submit` to create drafts only. Add `--submit` only when one final
 publication of all pending drafts was explicitly approved. The CLI validates
 the complete manifest and all target comments before mutation, creates drafts
 in order, submits at most once, and reports unavoidable remote partial failures.
+The final submission is revision-wide for the current user, not scoped to the
+manifest.
 
 ## Isolate Mozilla-only actions
 
@@ -102,7 +107,7 @@ Helper actions. Ratings and AI review requests take effect immediately. Request
 AI review only after the relevant changes are published and the user selected
 that reviewer.
 
-## Verify published replies
+## Verify reply linkage and visible Done state
 
 After submission, use `verify` with each expected reply-parent pair and Done
 state:
@@ -114,6 +119,10 @@ state:
   --format json
 ```
 
-The command exits nonzero if a published reply is missing, the direct parent
-does not match, or a requested comment is not Done. Do not mark the parent Done
-without separate approval.
+The command exits nonzero if a visible reply is missing, the direct parent does
+not match, or Conduit reports a requested comment as not Done. It does not
+independently prove reply publication. Upstream Conduit also reports
+`isDone=true` for both published Done and a pending undo-Done draft, so treat
+Done verification as a visible-state check and inspect the revision before
+submission when pending state matters. Do not mark the parent Done without
+separate approval.

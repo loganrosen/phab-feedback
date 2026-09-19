@@ -226,7 +226,7 @@ func TestMutationTextOutput(t *testing.T) {
 					{CommentID: 35},
 				},
 			},
-			want: "Marked #34, #35 Done as drafts on D12.",
+			want: "Confirmed #34, #35 Done on D12.",
 		},
 		{
 			command: "ai-review",
@@ -234,6 +234,7 @@ func TestMutationTextOutput(t *testing.T) {
 			want:    "A Review Helper AI review is already in progress on D12.",
 		},
 	}
+
 	for _, test := range tests {
 		t.Run(test.command, func(t *testing.T) {
 			got, err := renderText(test.command, test.result)
@@ -244,6 +245,21 @@ func TestMutationTextOutput(t *testing.T) {
 				t.Fatalf("text output = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestDoneFailureTextPreservesEarlierConfirmedComments(t *testing.T) {
+	got := ansi.Strip(renderDone(commentActionResult{
+		RevisionID: 12,
+		Comments: []commentAction{
+			{CommentID: 34},
+			{CommentID: 35, Recovery: "Rerun done before submitting."},
+		},
+	}))
+	want := "Confirmed #34 Done on D12.\n" +
+		"Done action for comment #35 on D12 requires recovery: Rerun done before submitting."
+	if got != want {
+		t.Fatalf("text output = %q, want %q", got, want)
 	}
 }
 
@@ -268,6 +284,30 @@ func TestBatchAndMutationHelpExposeExplicitPublicationFlags(t *testing.T) {
 			if !strings.Contains(output.String(), expected) {
 				t.Fatalf("%v help missing %q:\n%s", test.args, expected, output.String())
 			}
+		}
+	}
+}
+
+func TestBatchFailureTextHandlesMissingDetails(t *testing.T) {
+	got := ansi.Strip(renderBatch(batchResult{RevisionID: 12, State: "partial"}))
+	if got != "Batch stopped after an unreported failure on D12." {
+		t.Fatalf("text output = %q", got)
+	}
+}
+
+func TestFirefoxHelpExplainsAutomaticDiscoveryAndProfileRestriction(t *testing.T) {
+	var output bytes.Buffer
+	root := newRootCommand([]string{"--help"}, strings.NewReader(""), &output, &output)
+	root.SetArgs([]string{"--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"Report Firefox discovery failures directly (discovery is automatic)",
+		"Restrict Firefox cookie discovery to this profile",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("help missing %q:\n%s", expected, output.String())
 		}
 	}
 }

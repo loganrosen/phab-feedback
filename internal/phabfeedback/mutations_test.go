@@ -114,7 +114,7 @@ func TestMarkDoneRetriesUncheckedResponse(t *testing.T) {
 	service, transport := serviceWith(
 		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
-		response(map[string]any{"payload": map[string]any{"isChecked": false}}),
+		response(map[string]any{"payload": map[string]any{"isChecked": false, "draftState": true}}),
 		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": false}}),
 	)
 	result, err := service.markDone("D1", []string{"20"}, false)
@@ -133,6 +133,72 @@ func TestMarkDoneRetriesUncheckedResponse(t *testing.T) {
 		if request.form(t).Get("op") != "done" || request.form(t).Get("id") != "20" {
 			t.Fatalf("unexpected Done form: %v", request.form(t))
 		}
+	}
+}
+
+func TestMarkDoneRestoresClearedPendingDraft(t *testing.T) {
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	service, _ := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"isChecked": false, "draftState": false}}),
+		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
+	)
+	result, err := service.markDone("D1", []string{"20"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Comments) != 1 || !boolPointerValue(result.Comments[0].IsDone) ||
+		!boolPointerValue(result.Comments[0].Draft) || boolPointerValue(result.Comments[0].Published) {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestMarkDoneRetryFailureReportsActionableState(t *testing.T) {
+	tests := []struct {
+		name       string
+		draftState bool
+		want       string
+	}{
+		{name: "pending undo", draftState: true, want: "pending undo-Done draft"},
+		{name: "cleared pending done", draftState: false, want: "cleared the pending Done draft"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			inline := transaction(1, "inline", 20, map[string]any{"isDone": test.draftState})
+			service, _ := serviceWith(
+				conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+				response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+				response(map[string]any{"payload": map[string]any{
+					"isChecked": false, "draftState": test.draftState,
+				}}),
+				io.ErrUnexpectedEOF,
+			)
+			result, err := service.markDone("D1", []string{"20"}, false)
+			if err == nil || len(result.Comments) != 1 {
+				t.Fatalf("unexpected result: %#v %v", result, err)
+			}
+			if result.Comments[0].Recovery == "" ||
+				!strings.Contains(result.Comments[0].Recovery, test.want) ||
+				!strings.Contains(err.Error(), "Rerun done") {
+				t.Fatalf("missing recovery guidance: %#v %v", result, err)
+			}
+		})
+	}
+}
+
+func TestInlineValidationRejectsMissingPHIDBeforeMutation(t *testing.T) {
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	activeComment(inline)["phid"] = ""
+	service, transport := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+	)
+	if _, err := service.draftInlineReply("D1", "20", "reply"); err == nil ||
+		!strings.Contains(err.Error(), "has no PHID") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(transport.requests) != 1 {
+		t.Fatalf("mutation occurred after malformed validation data: %d requests", len(transport.requests))
 	}
 }
 

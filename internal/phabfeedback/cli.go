@@ -81,8 +81,8 @@ func newRootCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) *c
 	root.SetErr(stderr)
 	root.PersistentFlags().StringVar(&options.host, "host", "", "Phabricator/Phorge base URL")
 	root.PersistentFlags().StringVar(&options.config, "config", "", "Path to config JSON (default: XDG config directory)")
-	root.PersistentFlags().BoolVar(&options.firefoxCookies, "firefox-cookies", false, "Find a web session across local Firefox profiles")
-	root.PersistentFlags().StringVar(&options.firefoxProfile, "firefox-profile", "", "Firefox profile directory (implies --firefox-cookies)")
+	root.PersistentFlags().BoolVar(&options.firefoxCookies, "firefox-cookies", false, "Report Firefox discovery failures directly (discovery is automatic)")
+	root.PersistentFlags().StringVar(&options.firefoxProfile, "firefox-profile", "", "Restrict Firefox cookie discovery to this profile")
 	root.PersistentFlags().StringVar(&options.format, "format", "text", "Output format: text or json")
 	root.PersistentPreRunE = func(_ *cobra.Command, _ []string) error {
 		return validateFormat(options.format)
@@ -448,7 +448,7 @@ func newVerifyCommand(app *appOptions, revision string) *cobra.Command {
 	var replyValues, doneValues []string
 	command := &cobra.Command{
 		Use:     "verify",
-		Short:   "Verify published reply linkage and Done states",
+		Short:   "Verify reply linkage and visible Conduit Done states",
 		GroupID: "respond",
 		Args:    cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
@@ -468,8 +468,8 @@ func newVerifyCommand(app *appOptions, revision string) *cobra.Command {
 			})
 		},
 	}
-	command.Flags().StringArrayVar(&replyValues, "reply", nil, "Expected published linkage as REPLY_ID:PARENT_ID (repeatable)")
-	command.Flags().StringArrayVar(&doneValues, "done", nil, "Expected Done comment ID (repeatable)")
+	command.Flags().StringArrayVar(&replyValues, "reply", nil, "Expected reply linkage as REPLY_ID:PARENT_ID (repeatable)")
+	command.Flags().StringArrayVar(&doneValues, "done", nil, "Expected Conduit isDone comment ID (repeatable)")
 	return command
 }
 

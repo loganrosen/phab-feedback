@@ -133,3 +133,79 @@ Locked=1
 		t.Fatalf("cookie = %q, want discovered Firefox cookie", got.cookie)
 	}
 }
+
+func TestSessionCookieEnvironmentPrecedesFirefox(t *testing.T) {
+	home := t.TempDir()
+	profile := filepath.Join(home, "profile")
+	writeFirefoxCookie(t, profile, "firefox")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("PHAB_FEEDBACK_HOST", "https://phab.example")
+	t.Setenv("PHAB_FEEDBACK_SESSION_COOKIE", "environment")
+	t.Setenv("PHAB_FEEDBACK_ARCRC", filepath.Join(home, "missing-arcrc"))
+
+	got, err := resolveCredentials(t.Context(), credentialOptions{
+		requireCookie: true, firefoxProfile: profile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.cookie != "phsid=environment" {
+		t.Fatalf("cookie = %q, want environment cookie", got.cookie)
+	}
+}
+
+func TestExplicitFirefoxProfilePrecedesAutomaticDiscovery(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "Library", "Application Support", "Firefox")
+	automatic := filepath.Join(root, "Profiles", "automatic.default-release")
+	explicit := filepath.Join(home, "explicit-profile")
+	writeFirefoxCookie(t, automatic, "automatic")
+	writeFirefoxCookie(t, explicit, "explicit")
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "profiles.ini"), []byte(`[InstallABC]
+Default=Profiles/automatic.default-release
+Locked=1
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("PHAB_FEEDBACK_HOST", "https://phab.example")
+	t.Setenv("PHAB_FEEDBACK_SESSION_COOKIE", "")
+	t.Setenv("PHAB_FEEDBACK_ARCRC", filepath.Join(home, "missing-arcrc"))
+
+	got, err := resolveCredentials(t.Context(), credentialOptions{
+		requireCookie: true, firefoxProfile: explicit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.cookie != "phsid=explicit" {
+		t.Fatalf("cookie = %q, want explicit profile cookie", got.cookie)
+	}
+}
+
+func writeFirefoxCookie(t *testing.T, profile, value string) {
+	t.Helper()
+	if err := os.MkdirAll(profile, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(profile, "cookies.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), "CREATE TABLE moz_cookies (name TEXT, value TEXT, host TEXT)"); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO moz_cookies VALUES ('phsid', ?, '.phab.example')", value); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
