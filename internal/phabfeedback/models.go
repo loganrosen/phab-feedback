@@ -181,48 +181,81 @@ type overviewResult struct {
 }
 
 type commentResult struct {
-	RevisionID int  `json:"revision_id"`
-	Posted     bool `json:"posted"`
-	Result     any  `json:"result"`
+	RevisionID int    `json:"revision_id"`
+	Action     string `json:"action"`
+	Posted     bool   `json:"posted"`
+	Published  bool   `json:"published"`
+	Result     any    `json:"result"`
 }
 
 type submissionResult struct {
-	RevisionID int  `json:"revision_id"`
-	Submitted  bool `json:"submitted"`
-	Redirect   any  `json:"redirect"`
+	RevisionID     int    `json:"revision_id"`
+	Action         string `json:"action"`
+	Outcome        string `json:"outcome"`
+	Attempted      bool   `json:"attempted"`
+	Submitted      bool   `json:"submitted"`
+	OutcomeUnknown bool   `json:"outcome_unknown,omitempty"`
+	Redirect       string `json:"redirect,omitempty"`
+	Dialog         string `json:"dialog,omitempty"`
+	Recovery       string `json:"recovery,omitempty"`
 }
+
+const (
+	submissionOutcomeNotAttempted = "not-attempted"
+	submissionOutcomeBlocked      = "blocked"
+	submissionOutcomeUnknown      = "unknown"
+	submissionOutcomeRejected     = "rejected"
+	submissionOutcomeSubmitted    = "submitted"
+)
 
 type inlineReplyResult struct {
 	RevisionID        int               `json:"revision_id"`
+	Action            string            `json:"action"`
 	ParentCommentID   int               `json:"parent_comment_id"`
 	ParentCommentPHID any               `json:"parent_comment_phid"`
 	DraftCommentID    int               `json:"draft_comment_id"`
+	CreatedReplyID    int               `json:"created_reply_id"`
+	Saved             bool              `json:"saved"`
 	Draft             bool              `json:"draft"`
+	Published         bool              `json:"published"`
+	FinalDone         *bool             `json:"final_done,omitempty"`
+	Done              *commentAction    `json:"done,omitempty"`
 	Submission        *submissionResult `json:"submission,omitempty"`
 }
 
 type removedCommentResult struct {
-	RevisionID int  `json:"revision_id"`
-	CommentID  int  `json:"comment_id"`
-	Removed    bool `json:"removed"`
+	RevisionID int    `json:"revision_id"`
+	Action     string `json:"action"`
+	CommentID  int    `json:"comment_id"`
+	Removed    bool   `json:"removed"`
 }
 
 type commentAction struct {
-	CommentID int   `json:"comment_id"`
-	IsDone    *bool `json:"is_done,omitempty"`
-	Draft     *bool `json:"draft,omitempty"`
-	Helpful   *bool `json:"helpful,omitempty"`
-	Message   any   `json:"message,omitempty"`
+	Action             string `json:"action,omitempty"`
+	CommentID          int    `json:"comment_id"`
+	IsDone             *bool  `json:"is_done,omitempty"`
+	FinalDone          *bool  `json:"final_done,omitempty"`
+	Draft              *bool  `json:"draft,omitempty"`
+	Published          *bool  `json:"published,omitempty"`
+	ObservedChecked    *bool  `json:"observed_checked,omitempty"`
+	ObservedDraftState *bool  `json:"observed_draft_state,omitempty"`
+	Recovery           string `json:"recovery,omitempty"`
+	Helpful            *bool  `json:"helpful,omitempty"`
+	Message            any    `json:"message,omitempty"`
 }
 
 type commentActionResult struct {
-	RevisionID          int             `json:"revision_id"`
-	MozillaReviewHelper bool            `json:"mozilla_review_helper,omitempty"`
-	Comments            []commentAction `json:"comments"`
+	RevisionID          int               `json:"revision_id"`
+	Action              string            `json:"action"`
+	MozillaReviewHelper bool              `json:"mozilla_review_helper,omitempty"`
+	Comments            []commentAction   `json:"comments"`
+	NotAttempted        []int             `json:"not_attempted,omitempty"`
+	Submission          *submissionResult `json:"submission,omitempty"`
 }
 
 type aiReviewResult struct {
 	RevisionID          int    `json:"revision_id"`
+	Action              string `json:"action"`
 	MozillaReviewHelper bool   `json:"mozilla_review_helper"`
 	Status              string `json:"status"`
 }
@@ -237,4 +270,81 @@ type doctorResult struct {
 	Host   string        `json:"host"`
 	Checks []doctorCheck `json:"checks"`
 	OK     bool          `json:"ok"`
+}
+
+type batchManifest struct {
+	Revision string                `json:"revision"`
+	Actions  []batchManifestAction `json:"actions"`
+}
+
+type batchManifestAction struct {
+	CommentID int     `json:"comment_id"`
+	Reply     *string `json:"reply,omitempty"`
+	Done      *bool   `json:"done,omitempty"`
+}
+
+type batchMutation struct {
+	ActionIndex        int    `json:"action_index"`
+	MutationIndex      int    `json:"mutation_index"`
+	Action             string `json:"action"`
+	CommentID          int    `json:"comment_id"`
+	ParentCommentID    int    `json:"parent_comment_id,omitempty"`
+	CreatedReplyID     int    `json:"created_reply_id,omitempty"`
+	Planned            bool   `json:"planned,omitempty"`
+	Saved              bool   `json:"saved,omitempty"`
+	Draft              *bool  `json:"draft,omitempty"`
+	Published          *bool  `json:"published,omitempty"`
+	FinalDone          *bool  `json:"final_done,omitempty"`
+	ObservedChecked    *bool  `json:"observed_checked,omitempty"`
+	ObservedDraftState *bool  `json:"observed_draft_state,omitempty"`
+	Recovery           string `json:"recovery,omitempty"`
+}
+
+type batchFailure struct {
+	ActionIndex        int    `json:"action_index,omitempty"`
+	MutationIndex      int    `json:"mutation_index,omitempty"`
+	Action             string `json:"action"`
+	CompletedMutations int    `json:"completed_mutations"`
+	Error              string `json:"error"`
+}
+
+type batchResult struct {
+	RevisionID int               `json:"revision_id"`
+	Action     string            `json:"action"`
+	DryRun     bool              `json:"dry_run"`
+	Submit     bool              `json:"submit"`
+	State      string            `json:"state"`
+	Mutations  []batchMutation   `json:"mutations"`
+	Submission *submissionResult `json:"submission,omitempty"`
+	Failure    *batchFailure     `json:"failure,omitempty"`
+}
+
+type replyExpectation struct {
+	ReplyID  int
+	ParentID int
+}
+
+type replyVerification struct {
+	ReplyID         int  `json:"reply_id"`
+	ParentCommentID int  `json:"parent_comment_id"`
+	Found           bool `json:"found"`
+	Linked          bool `json:"linked"`
+}
+
+type doneVerification struct {
+	CommentID     int    `json:"comment_id"`
+	Found         bool   `json:"found"`
+	ConduitIsDone bool   `json:"conduit_is_done"`
+	State         string `json:"state"`
+}
+
+type verificationResult struct {
+	RevisionID         int                 `json:"revision_id"`
+	Action             string              `json:"action"`
+	Status             string              `json:"status"`
+	ChecksPassed       bool                `json:"checks_passed"`
+	Replies            []replyVerification `json:"replies"`
+	Done               []doneVerification  `json:"done"`
+	DoneStateAmbiguous bool                `json:"done_state_ambiguous,omitempty"`
+	Limitations        []string            `json:"limitations,omitempty"`
 }

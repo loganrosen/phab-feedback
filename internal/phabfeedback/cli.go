@@ -65,6 +65,7 @@ func newRootCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) *c
 			"  phab-feedback D123",
 			"  phab-feedback D123 --threads=all",
 			"  phab-feedback D123 reply 456 --message-file reply.txt",
+			"  phab-feedback batch actions.json --dry-run",
 		}, "\n"),
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
@@ -80,14 +81,15 @@ func newRootCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) *c
 	root.SetErr(stderr)
 	root.PersistentFlags().StringVar(&options.host, "host", "", "Phabricator/Phorge base URL")
 	root.PersistentFlags().StringVar(&options.config, "config", "", "Path to config JSON (default: XDG config directory)")
-	root.PersistentFlags().BoolVar(&options.firefoxCookies, "firefox-cookies", false, "Find a web session across local Firefox profiles")
-	root.PersistentFlags().StringVar(&options.firefoxProfile, "firefox-profile", "", "Firefox profile directory (implies --firefox-cookies)")
+	root.PersistentFlags().BoolVar(&options.firefoxCookies, "firefox-cookies", false, "Report Firefox discovery failures directly (discovery is automatic)")
+	root.PersistentFlags().StringVar(&options.firefoxProfile, "firefox-profile", "", "Restrict Firefox cookie discovery to this profile")
 	root.PersistentFlags().StringVar(&options.format, "format", "text", "Output format: text or json")
 	root.PersistentPreRunE = func(_ *cobra.Command, _ []string) error {
 		return validateFormat(options.format)
 	}
 	root.AddCommand(newListCommand(options))
 	root.AddCommand(newDoctorCommand(options))
+	root.AddCommand(newBatchCommand(options))
 	if revision := revisionArgument(root, args); revision != "" {
 		root.AddCommand(newRevisionGroup(options, revision))
 	}
@@ -310,6 +312,7 @@ func newRevisionGroup(app *appOptions, revision string) *cobra.Command {
 		newRemoveCommentCommand(app, revision),
 		newDoneCommand(app, revision),
 		newSubmitCommand(app, revision),
+		newVerifyCommand(app, revision),
 		newRateCommand(app, revision),
 		newAIReviewCommand(app, revision),
 	)
@@ -380,7 +383,7 @@ func newCommentCommand(app *appOptions, revision string) *cobra.Command {
 
 func newReplyCommand(app *appOptions, revision string) *cobra.Command {
 	message := messageOptions{}
-	var submit bool
+	var done, submit bool
 	command := &cobra.Command{
 		Use:     "reply COMMENT_ID",
 		Short:   "Draft a true reply to an inline comment",
@@ -392,18 +395,13 @@ func newReplyCommand(app *appOptions, revision string) *cobra.Command {
 				return err
 			}
 			return app.execute(command.Context(), "reply", true, true, func(service *feedbackService) (any, error) {
-				result, err := service.draftInlineReply(revision, args[0], text)
-				if err == nil && submit {
-					var submission submissionResult
-					submission, err = service.submit(revision)
-					result.Submission = &submission
-				}
-				return result, err
+				return service.reply(revision, args[0], text, done, submit)
 			})
 		},
 	}
 	addMessageFlags(command, &message)
-	command.Flags().BoolVar(&submit, "submit", false, "Explicitly publish the new reply draft immediately")
+	command.Flags().BoolVar(&done, "done", false, "Also mark the parent comment Done after drafting the reply")
+	command.Flags().BoolVar(&submit, "submit", false, "Publish every pending draft you own on this revision, including unrelated drafts; never override warnings")
 	return command
 }
 
@@ -422,24 +420,77 @@ func newRemoveCommentCommand(app *appOptions, revision string) *cobra.Command {
 }
 
 func newDoneCommand(app *appOptions, revision string) *cobra.Command {
-	return &cobra.Command{
+	var submit bool
+	command := &cobra.Command{
 		Use:     "done COMMENT_ID...",
 		Short:   "Mark inline comments Done as drafts",
 		GroupID: "respond",
 		Args:    cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			return app.execute(command.Context(), "done", true, true, func(service *feedbackService) (any, error) {
-				return service.markDone(revision, args)
+				return service.markDone(revision, args, submit)
 			})
 		},
 	}
+	command.Flags().BoolVar(&submit, "submit", false, "After creating a Done draft, publish every pending draft you own on this revision; never override warnings")
+	return command
 }
 
 func newSubmitCommand(app *appOptions, revision string) *cobra.Command {
-	command := newContextActionCommand(app, revision, "submit", "Submit pending draft actions and comments", false, true, func(service *feedbackService, revision string) (any, error) {
+	command := newContextActionCommand(app, revision, "submit", "Publish every pending draft you own on this revision; never override warnings", false, true, func(service *feedbackService, revision string) (any, error) {
 		return service.submit(revision)
 	})
 	command.GroupID = "respond"
+	return command
+}
+
+func newVerifyCommand(app *appOptions, revision string) *cobra.Command {
+	var replyValues, doneValues []string
+	command := &cobra.Command{
+		Use:     "verify",
+		Short:   "Verify reply linkage and visible Conduit Done states",
+		GroupID: "respond",
+		Args:    cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			replies, err := parseReplyExpectations(replyValues)
+			if err != nil {
+				return err
+			}
+			return app.execute(command.Context(), "verify", true, false, func(service *feedbackService) (any, error) {
+				result, err := service.verify(revision, replies, doneValues)
+				if err != nil {
+					return result, err
+				}
+				if !result.ChecksPassed {
+					return result, &mutationResultError{result: result, err: &commandStatusError{}}
+				}
+				return result, nil
+			})
+		},
+	}
+	command.Flags().StringArrayVar(&replyValues, "reply", nil, "Expected reply linkage as REPLY_ID:PARENT_ID (repeatable)")
+	command.Flags().StringArrayVar(&doneValues, "done", nil, "Expected Conduit isDone comment ID (repeatable)")
+	return command
+}
+
+func newBatchCommand(app *appOptions) *cobra.Command {
+	var dryRun, submit bool
+	command := &cobra.Command{
+		Use:   "batch MANIFEST",
+		Short: "Validate and execute ordered reply and Done actions from JSON",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			manifest, err := readBatchManifest(args[0])
+			if err != nil {
+				return err
+			}
+			return app.execute(command.Context(), "batch", true, !dryRun, func(service *feedbackService) (any, error) {
+				return service.batch(manifest, submit, dryRun)
+			})
+		},
+	}
+	command.Flags().BoolVar(&dryRun, "dry-run", false, "Validate the manifest and target comments without creating drafts")
+	command.Flags().BoolVar(&submit, "submit", false, "After creating drafts, publish every pending draft you own on the revision; never override warnings")
 	return command
 }
 
@@ -521,8 +572,18 @@ func (app *appOptions) execute(
 	}
 	result, err := action(service)
 	if err != nil {
+		var resultError interface{ commandResult() any }
+		if errors.As(err, &resultError) {
+			if outputErr := app.outputResult(command, resultError.commandResult()); outputErr != nil {
+				return outputErr
+			}
+		}
 		return err
 	}
+	return app.outputResult(command, result)
+}
+
+func (app *appOptions) outputResult(command string, result any) error {
 	if app.format == "text" {
 		text, err := renderText(command, result)
 		if err != nil {

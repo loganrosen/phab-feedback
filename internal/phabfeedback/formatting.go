@@ -49,13 +49,13 @@ func renderText(command string, result any) (string, error) {
 		return successStyle.Render(fmt.Sprintf("Removed comment #%d from D%d.", value.CommentID, value.RevisionID)), nil
 	case "done":
 		value, err := typedResult[commentActionResult](result, command)
-		return renderCommentAction(value, "Marked", "Done as drafts"), err
+		return renderDone(value), err
 	case "submit":
 		value, err := typedResult[submissionResult](result, command)
 		if err != nil {
 			return "", err
 		}
-		return successStyle.Render(fmt.Sprintf("Submitted pending drafts on D%d.", value.RevisionID)), nil
+		return renderSubmission(value), nil
 	case "rate-helpful":
 		value, err := typedResult[commentActionResult](result, command)
 		return renderCommentAction(value, "Rated", "helpful"), err
@@ -68,6 +68,12 @@ func renderText(command string, result any) (string, error) {
 	case "doctor":
 		value, err := typedResult[doctorResult](result, command)
 		return renderDoctor(value), err
+	case "batch":
+		value, err := typedResult[batchResult](result, command)
+		return renderBatch(value), err
+	case "verify":
+		value, err := typedResult[verificationResult](result, command)
+		return renderVerification(value), err
 	default:
 		return "", fmt.Errorf("text output is not supported for %s", command)
 	}
@@ -87,14 +93,105 @@ func renderOverview(result overviewResult) string {
 }
 
 func renderInlineReply(result inlineReplyResult) string {
-	lines := []string{successStyle.Render(fmt.Sprintf(
-		"Drafted inline reply #%d to comment #%d on D%d.",
-		result.DraftCommentID,
-		result.ParentCommentID,
-		result.RevisionID,
-	))}
+	replyID := result.CreatedReplyID
+	if replyID == 0 {
+		replyID = result.DraftCommentID
+	}
+	lines := make([]string, 0, 3)
+	switch {
+	case replyID == 0:
+		lines = append(lines, decisionStyle("unresolved").Render(fmt.Sprintf(
+			"Could not confirm reply creation for comment #%d on D%d.",
+			result.ParentCommentID, result.RevisionID,
+		)))
+	case !result.Saved && !result.Draft && !result.Published:
+		lines = append(lines, decisionStyle("unresolved").Render(fmt.Sprintf(
+			"Created inline reply #%d to comment #%d on D%d, but did not confirm its saved state.",
+			replyID, result.ParentCommentID, result.RevisionID,
+		)))
+	default:
+		state := "Drafted"
+		if result.Published {
+			state = "Published"
+		}
+		lines = append(lines, successStyle.Render(fmt.Sprintf(
+			"%s inline reply #%d to comment #%d on D%d.",
+			state, replyID, result.ParentCommentID, result.RevisionID,
+		)))
+		if result.Done != nil {
+			switch {
+			case result.Done.Recovery != "":
+				lines = append(lines, decisionStyle("unresolved").Render(fmt.Sprintf(
+					"Done action for comment #%d requires recovery: %s",
+					result.ParentCommentID, result.Done.Recovery,
+				)))
+			case boolPointerValue(result.Done.Draft):
+				lines = append(lines, successStyle.Render(fmt.Sprintf("Created a Done draft for comment #%d.", result.ParentCommentID)))
+			default:
+				lines = append(lines, successStyle.Render(fmt.Sprintf("Confirmed comment #%d Done.", result.ParentCommentID)))
+			}
+		}
+	}
 	if result.Submission != nil {
-		lines = append(lines, successStyle.Render(fmt.Sprintf("Submitted pending drafts on D%d.", result.Submission.RevisionID)))
+		lines = append(lines, renderSubmission(*result.Submission))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderDone(result commentActionResult) string {
+	if len(result.Comments) == 0 {
+		return decisionStyle("unresolved").Render(fmt.Sprintf("No Done changes were confirmed on D%d.", result.RevisionID))
+	}
+	drafted := make([]string, 0, len(result.Comments))
+	published := make([]string, 0, len(result.Comments))
+	confirmed := make([]string, 0, len(result.Comments))
+	recovery := make([]string, 0)
+	for _, comment := range result.Comments {
+		if comment.Recovery != "" {
+			recovery = append(recovery, decisionStyle("unresolved").Render(fmt.Sprintf(
+				"Done action for comment #%d on D%d requires recovery: %s",
+				comment.CommentID, result.RevisionID, comment.Recovery,
+			)))
+			continue
+		}
+		identifier := fmt.Sprintf("#%d", comment.CommentID)
+		switch {
+		case boolPointerValue(comment.Draft):
+			drafted = append(drafted, identifier)
+		case boolPointerValue(comment.Published):
+			published = append(published, identifier)
+		default:
+			confirmed = append(confirmed, identifier)
+		}
+	}
+	lines := make([]string, 0, 4)
+	if len(drafted) > 0 {
+		lines = append(lines, successStyle.Render(fmt.Sprintf(
+			"Created Done drafts for %s on D%d.", strings.Join(drafted, ", "), result.RevisionID,
+		)))
+	}
+	if len(published) > 0 {
+		message := fmt.Sprintf("Confirmed %s already Done on D%d.", strings.Join(published, ", "), result.RevisionID)
+		if result.Submission != nil && result.Submission.Submitted {
+			message = fmt.Sprintf("Confirmed %s Done on D%d.", strings.Join(published, ", "), result.RevisionID)
+		}
+		lines = append(lines, successStyle.Render(message))
+	}
+	if len(confirmed) > 0 {
+		lines = append(lines, successStyle.Render(fmt.Sprintf(
+			"Confirmed %s Done on D%d.", strings.Join(confirmed, ", "), result.RevisionID,
+		)))
+	}
+	if result.Submission != nil {
+		lines = append(lines, renderSubmission(*result.Submission))
+	}
+	lines = append(lines, recovery...)
+	if len(result.NotAttempted) > 0 {
+		ids := make([]string, 0, len(result.NotAttempted))
+		for _, identifier := range result.NotAttempted {
+			ids = append(ids, fmt.Sprintf("#%d", identifier))
+		}
+		lines = append(lines, detailStyle.Render("Not attempted: "+strings.Join(ids, ", ")+"."))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -105,6 +202,41 @@ func renderCommentAction(result commentActionResult, verb, outcome string) strin
 		ids = append(ids, fmt.Sprintf("#%d", comment.CommentID))
 	}
 	return successStyle.Render(fmt.Sprintf("%s %s %s on D%d.", verb, strings.Join(ids, ", "), outcome, result.RevisionID))
+}
+
+func renderSubmission(result submissionResult) string {
+	if result.Submitted {
+		return successStyle.Render(fmt.Sprintf(
+			"Submitted every pending draft you own on D%d.", result.RevisionID,
+		))
+	}
+	switch result.Outcome {
+	case submissionOutcomeNotAttempted:
+		return detailStyle.Render(fmt.Sprintf(
+			"Submission was not attempted on D%d: %s", result.RevisionID, result.Recovery,
+		))
+	case submissionOutcomeBlocked:
+		return decisionStyle("unresolved").Render(fmt.Sprintf(
+			"Submission was blocked before it was attempted on D%d: %s", result.RevisionID, result.Recovery,
+		))
+	case submissionOutcomeRejected:
+		detail := result.Dialog
+		if detail == "" {
+			detail = result.Recovery
+		}
+		return decisionStyle("unresolved").Render(fmt.Sprintf(
+			"Submission was rejected on D%d: %s", result.RevisionID, detail,
+		))
+	default:
+		if result.Recovery == "" {
+			return decisionStyle("unresolved").Render(fmt.Sprintf(
+				"Submission outcome is unknown on D%d.", result.RevisionID,
+			))
+		}
+		return decisionStyle("unresolved").Render(fmt.Sprintf(
+			"Submission outcome is unknown on D%d: %s", result.RevisionID, result.Recovery,
+		))
+	}
 }
 
 func renderAIReview(result aiReviewResult) string {
@@ -323,6 +455,82 @@ func renderDoctor(result doctorResult) string {
 			style = decisionStyle("unresolved")
 		}
 		lines = append(lines, fmt.Sprintf("%s  %s", style.Render(check.Name), check.Message))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderBatch(result batchResult) string {
+	switch result.State {
+	case "planned":
+		submission := "without submission"
+		if result.Submit {
+			submission = "with one final revision-wide submission"
+		}
+		return fmt.Sprintf("Validated %d planned mutations on D%d %s.", len(result.Mutations), result.RevisionID, submission)
+	case "published":
+		return successStyle.Render(fmt.Sprintf(
+			"Published %d batch mutations and every other pending draft you own on D%d with one submission.",
+			len(result.Mutations), result.RevisionID,
+		))
+	case "unchanged":
+		reason := "the batch created no new drafts"
+		if result.Submission != nil && result.Submission.Recovery != "" {
+			reason = result.Submission.Recovery
+		}
+		return detailStyle.Render(fmt.Sprintf("Submission was not attempted on D%d: %s", result.RevisionID, reason))
+	case "partial", "failed":
+		if result.Failure == nil {
+			return decisionStyle("unresolved").Render(fmt.Sprintf("Batch stopped after an unreported failure on D%d.", result.RevisionID))
+		}
+		if result.Failure.Action == "submit" {
+			lines := []string{decisionStyle("unresolved").Render(fmt.Sprintf(
+				"Batch submission stopped after %d completed mutations on D%d.",
+				result.Failure.CompletedMutations, result.RevisionID,
+			))}
+			if result.Submission != nil {
+				lines = append(lines, renderSubmission(*result.Submission))
+			}
+			return strings.Join(lines, "\n")
+		}
+		return decisionStyle("unresolved").Render(fmt.Sprintf(
+			"Batch stopped at manifest action %d, mutation %d (%s), after %d completed mutations on D%d.",
+			result.Failure.ActionIndex, result.Failure.MutationIndex, result.Failure.Action,
+			result.Failure.CompletedMutations, result.RevisionID,
+		))
+	default:
+		return successStyle.Render(fmt.Sprintf("Created %d batch mutation drafts on D%d.", len(result.Mutations), result.RevisionID))
+	}
+}
+
+func renderVerification(result verificationResult) string {
+	var summary string
+	switch result.Status {
+	case "verified":
+		summary = successStyle.Render(fmt.Sprintf(
+			"Verified %d reply links on D%d.", len(result.Replies), result.RevisionID,
+		))
+	case "observed":
+		summary = decisionStyle("unknown").Render(fmt.Sprintf(
+			"Observed %d reply links and %d ambiguous Conduit Done indicators on D%d.",
+			len(result.Replies), len(result.Done), result.RevisionID,
+		))
+	default:
+		failed := 0
+		for _, reply := range result.Replies {
+			if !reply.Found || !reply.Linked {
+				failed++
+			}
+		}
+		for _, done := range result.Done {
+			if !done.Found || !done.ConduitIsDone {
+				failed++
+			}
+		}
+		summary = decisionStyle("unresolved").Render(fmt.Sprintf("%d verification checks failed on D%d.", failed, result.RevisionID))
+	}
+	lines := []string{summary}
+	for _, limitation := range result.Limitations {
+		lines = append(lines, detailStyle.Render("Limitation: "+limitation))
 	}
 	return strings.Join(lines, "\n")
 }

@@ -427,7 +427,7 @@ func (s *feedbackService) postComment(revision, message string) (commentResult, 
 	if err != nil {
 		return commentResult{}, err
 	}
-	return commentResult{RevisionID: revisionID, Posted: true, Result: result}, nil
+	return commentResult{RevisionID: revisionID, Action: "comment", Posted: true, Published: true, Result: result}, nil
 }
 
 func (s *feedbackService) draftInlineReply(revision, parent, message string) (inlineReplyResult, error) {
@@ -435,9 +435,21 @@ func (s *feedbackService) draftInlineReply(revision, parent, message string) (in
 	if err != nil {
 		return inlineReplyResult{}, err
 	}
-	_, parentComment, err := s.findComment(revision, parent, "inline")
+	comments, err := s.validateInlineComments(revision, []string{parent})
 	if err != nil {
 		return inlineReplyResult{}, err
+	}
+	return s.draftInlineReplyValidated(revisionID, comments[0], message)
+}
+
+func (s *feedbackService) draftInlineReplyValidated(revisionID int, parent validatedComment, message string) (inlineReplyResult, error) {
+	parentPHID := stringValue(parent.Comment["phid"])
+	result := inlineReplyResult{
+		RevisionID: revisionID, Action: "reply", ParentCommentID: parent.ID,
+		ParentCommentPHID: parentPHID,
+	}
+	if parentPHID == "" {
+		return result, fmt.Errorf("inline comment %d has no PHID and cannot be used as a reply parent", parent.ID)
 	}
 	path := fmt.Sprintf("/differential/comment/inline/edit/%d/", revisionID)
 	common := map[string]string{
@@ -446,28 +458,145 @@ func (s *feedbackService) draftInlineReply(revision, parent, message string) (in
 	}
 	create := cloneStrings(common)
 	create["op"] = "reply"
-	create["replyToCommentPHID"] = stringValue(parentComment["phid"])
+	create["replyToCommentPHID"] = parentPHID
 	created, err := s.web.post(path, create)
 	if err != nil {
-		return inlineReplyResult{}, err
+		return result, &mutationResultError{
+			result: result,
+			err:    fmt.Errorf("remote mutation outcome is unknown while creating the reply: %w", err),
+		}
 	}
 	payload, _ := mapValue(created["payload"])
 	inline, _ := mapValue(payload["inline"])
 	replyID, ok := intValue(inline["id"])
 	if !ok || replyID < 1 {
-		return inlineReplyResult{}, fmt.Errorf("inline reply creation returned no comment ID")
+		return result, &mutationResultError{
+			result: result,
+			err:    fmt.Errorf("remote partial failure: inline reply creation returned no comment ID; inspect the revision before retrying"),
+		}
 	}
+	result.DraftCommentID = replyID
+	result.CreatedReplyID = replyID
 	save := cloneStrings(common)
 	save["op"] = "save"
 	save["id"] = strconv.Itoa(replyID)
-	if _, err := s.web.post(path, save); err != nil {
+	saved, err := s.web.post(path, save)
+	if err != nil {
+		return result, &mutationResultError{
+			result: result,
+			err:    fmt.Errorf("remote partial failure: reply %d was created but could not be saved: %w", replyID, err),
+		}
+	}
+	savedPayload, ok := mapValue(saved["payload"])
+	savedInline, inlineOK := mapValue(savedPayload["inline"])
+	savedID, idOK := intValue(savedInline["id"])
+	if !ok || !inlineOK || !idOK || savedID != replyID {
+		dialog := boundedDialogText(savedPayload["dialog"])
+		detail := "the save response did not include a rendered inline"
+		if dialog != "" {
+			detail = "Phabricator returned a dialog: " + dialog
+		} else if idOK {
+			detail = fmt.Sprintf("the save response identified inline %d instead of %d", savedID, replyID)
+		}
+		return result, &mutationResultError{
+			result: result,
+			err: fmt.Errorf(
+				"remote partial failure: reply %d was created but its saved state was not confirmed; %s; "+
+					"inspect or close any editing inline before submitting",
+				replyID, detail,
+			),
+		}
+	}
+	result.Saved = true
+	result.Draft = true
+	return result, nil
+}
+
+func (s *feedbackService) reply(revision, parent, message string, done, submit bool) (inlineReplyResult, error) {
+	revisionID, err := revisionNumber(revision)
+	if err != nil {
 		return inlineReplyResult{}, err
 	}
-	parentID, _ := commentID(parent)
-	return inlineReplyResult{
-		RevisionID: revisionID, ParentCommentID: parentID, ParentCommentPHID: parentComment["phid"],
-		DraftCommentID: replyID, Draft: true,
-	}, nil
+	comments, err := s.validateInlineComments(revision, []string{parent})
+	if err != nil {
+		return inlineReplyResult{}, err
+	}
+	result, err := s.draftInlineReplyValidated(revisionID, comments[0], message)
+	if err != nil {
+		if submit {
+			result.Submission = unattemptedSubmission(
+				revisionID,
+				"The reply draft was not created successfully.",
+			)
+		}
+		if done {
+			err = fmt.Errorf("%w; parent Done action was not attempted", err)
+		}
+		if submit || done {
+			return result, &mutationResultError{result: result, err: err}
+		}
+		return result, err
+	}
+	if done {
+		result.Action = "reply+done"
+		doneResult, doneErr := s.markDoneValidated(revisionID, []validatedComment{comments[0]})
+		if len(doneResult.Comments) > 0 {
+			result.Done = &doneResult.Comments[0]
+			result.FinalDone = doneResult.Comments[0].FinalDone
+		}
+		if doneErr != nil {
+			if submit {
+				result.Submission = unattemptedSubmission(
+					revisionID,
+					"The parent Done action failed.",
+				)
+			}
+			return result, &mutationResultError{
+				result: result,
+				err: fmt.Errorf(
+					"remote partial failure: reply %d was drafted but comment %d was not marked Done: %w",
+					result.CreatedReplyID, comments[0].ID, doneErr,
+				),
+			}
+		}
+	}
+	if !submit {
+		return result, nil
+	}
+	submission, err := s.submit(revision)
+	result.Submission = &submission
+	if err != nil {
+		return result, &mutationResultError{
+			result: result,
+			err:    fmt.Errorf("remote partial failure: drafts were created but submission failed: %w", err),
+		}
+	}
+	if !submission.Submitted {
+		return result, &mutationResultError{
+			result: result,
+			err: fmt.Errorf(
+				"remote partial failure: reply draft %d was created but Phabricator reported no publishable effect; inspect the revision",
+				result.CreatedReplyID,
+			),
+		}
+	}
+	result.Draft = false
+	result.Published = true
+	if result.Done != nil {
+		draft, published := false, true
+		result.Done.Draft = &draft
+		result.Done.Published = &published
+	}
+	return result, nil
+}
+
+func commentActionsHaveDraft(comments []commentAction) bool {
+	for _, comment := range comments {
+		if boolPointerValue(comment.Draft) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *feedbackService) removeComment(revision, target string) (removedCommentResult, error) {
@@ -507,41 +636,188 @@ func (s *feedbackService) removeComment(revision, target string) (removedComment
 		return removedCommentResult{}, fmt.Errorf("server did not confirm removal of comment %s", target)
 	}
 	targetID, _ := commentID(target)
-	return removedCommentResult{RevisionID: revisionID, CommentID: targetID, Removed: true}, nil
+	return removedCommentResult{RevisionID: revisionID, Action: "remove-comment", CommentID: targetID, Removed: true}, nil
 }
 
-func (s *feedbackService) markDone(revision string, targets []string) (commentActionResult, error) {
+func (s *feedbackService) markDone(revision string, targets []string, submit bool) (commentActionResult, error) {
 	revisionID, err := revisionNumber(revision)
 	if err != nil {
 		return commentActionResult{}, err
 	}
-	ids, err := s.validateComments(revision, targets, "inline")
+	comments, err := s.validateInlineComments(revision, targets)
 	if err != nil {
 		return commentActionResult{}, err
 	}
+	result, err := s.markDoneValidated(revisionID, comments)
+	if err != nil {
+		if submit {
+			result.Submission = unattemptedSubmission(
+				revisionID,
+				"A Done action failed.",
+			)
+			return result, &mutationResultError{
+				result: result,
+				err:    err,
+			}
+		}
+		return result, err
+	}
+	if !submit {
+		return result, nil
+	}
+	if !commentActionsHaveDraft(result.Comments) {
+		result.Submission = unattemptedSubmission(
+			revisionID,
+			"All target comments were already published Done; existing unrelated drafts remain unpublished.",
+		)
+		return result, nil
+	}
+	submission, err := s.submit(revision)
+	result.Submission = &submission
+	if err != nil {
+		return result, &mutationResultError{
+			result: result,
+			err:    fmt.Errorf("remote partial failure: Done drafts were created but submission failed: %w", err),
+		}
+	}
+	if !submission.Submitted {
+		return result, &mutationResultError{
+			result: result,
+			err:    fmt.Errorf("remote partial failure: Done drafts were created but Phabricator reported no publishable effect; inspect the revision"),
+		}
+	}
+	for index := range result.Comments {
+		if result.Comments[index].Draft != nil && *result.Comments[index].Draft {
+			draft, published := false, true
+			result.Comments[index].Draft = &draft
+			result.Comments[index].Published = &published
+		}
+	}
+	return result, nil
+}
+
+func (s *feedbackService) markDoneValidated(revisionID int, comments []validatedComment) (commentActionResult, error) {
 	path := fmt.Sprintf("/differential/comment/inline/edit/%d/", revisionID)
-	results := make([]commentAction, 0, len(ids))
-	for _, identifier := range ids {
+	result := commentActionResult{RevisionID: revisionID, Action: "done", Comments: make([]commentAction, 0, len(comments))}
+	for index, comment := range comments {
+		identifier := comment.ID
+		// Conduit reports both published Done and a pending undo draft as
+		// isDone=true, so use the toggle response to establish the final state.
 		data := map[string]string{"op": "done", "id": strconv.Itoa(identifier), "__wflow__": "true", "__ajax__": "true"}
 		response, err := s.web.post(path, data)
 		if err != nil {
-			return commentActionResult{}, err
+			recovery := "The Done mutation outcome is unknown. Inspect this comment before submitting any drafts, then rerun done if needed."
+			result.Comments = append(result.Comments, commentAction{
+				Action: "done", CommentID: identifier, Recovery: recovery,
+			})
+			appendNotAttempted(&result, comments[index+1:])
+			return result, &mutationResultError{
+				result: result,
+				err:    fmt.Errorf("remote mutation outcome is unknown while marking inline comment %d Done; %s: %w", identifier, recovery, err),
+			}
 		}
-		payload, _ := mapValue(response["payload"])
-		if !boolValue(payload["isChecked"]) {
+		checked, draftState, err := doneResponseState(response)
+		if err != nil {
+			recovery := "The Done response was invalid, so the mutation outcome is unknown. Inspect this comment before submitting any drafts, then rerun done if needed."
+			result.Comments = append(result.Comments, commentAction{
+				Action: "done", CommentID: identifier, Recovery: recovery,
+			})
+			appendNotAttempted(&result, comments[index+1:])
+			return result, &mutationResultError{
+				result: result,
+				err:    fmt.Errorf("invalid Done response for inline comment %d; %s: %w", identifier, recovery, err),
+			}
+		}
+		if !checked {
+			firstDraftState := draftState
 			response, err = s.web.post(path, data)
 			if err != nil {
-				return commentActionResult{}, err
+				observedChecked := false
+				recovery := doneRecoveryMessage(firstDraftState, true)
+				result.Comments = append(result.Comments, commentAction{
+					Action: "done", CommentID: identifier,
+					ObservedChecked: &observedChecked, ObservedDraftState: &firstDraftState,
+					Recovery: recovery,
+				})
+				appendNotAttempted(&result, comments[index+1:])
+				return result, &mutationResultError{
+					result: result,
+					err:    fmt.Errorf("done retry failed for inline comment %d; %s: %w", identifier, recovery, err),
+				}
 			}
-			payload, _ = mapValue(response["payload"])
+			checked, draftState, err = doneResponseState(response)
+			if err != nil {
+				observedChecked := false
+				recovery := doneRecoveryMessage(firstDraftState, true)
+				result.Comments = append(result.Comments, commentAction{
+					Action: "done", CommentID: identifier,
+					ObservedChecked: &observedChecked, ObservedDraftState: &firstDraftState,
+					Recovery: recovery,
+				})
+				appendNotAttempted(&result, comments[index+1:])
+				return result, &mutationResultError{
+					result: result,
+					err:    fmt.Errorf("invalid Done retry response for inline comment %d; %s: %w", identifier, recovery, err),
+				}
+			}
 		}
-		if !boolValue(payload["isChecked"]) {
-			return commentActionResult{}, fmt.Errorf("server did not mark inline comment %d Done", identifier)
+		if !checked {
+			observedChecked := false
+			recovery := doneRecoveryMessage(draftState, false)
+			result.Comments = append(result.Comments, commentAction{
+				Action: "done", CommentID: identifier,
+				ObservedChecked: &observedChecked, ObservedDraftState: &draftState,
+				Recovery: recovery,
+			})
+			appendNotAttempted(&result, comments[index+1:])
+			return result, &mutationResultError{
+				result: result,
+				err:    fmt.Errorf("server left inline comment %d unchecked; %s", identifier, recovery),
+			}
 		}
-		isDone, draft := true, boolValue(payload["draftState"])
-		results = append(results, commentAction{CommentID: identifier, IsDone: &isDone, Draft: &draft})
+		isDone, draft := true, draftState
+		published := !draft
+		result.Comments = append(result.Comments, commentAction{
+			Action: "done", CommentID: identifier, IsDone: &isDone, FinalDone: &isDone,
+			Draft: &draft, Published: &published,
+		})
 	}
-	return commentActionResult{RevisionID: revisionID, Comments: results}, nil
+	return result, nil
+}
+
+func appendNotAttempted(result *commentActionResult, comments []validatedComment) {
+	for _, comment := range comments {
+		result.NotAttempted = append(result.NotAttempted, comment.ID)
+	}
+}
+
+func doneResponseState(response map[string]any) (bool, bool, error) {
+	payload, ok := mapValue(response["payload"])
+	if !ok {
+		return false, false, fmt.Errorf("response payload is missing")
+	}
+	checked, ok := payload["isChecked"].(bool)
+	if !ok {
+		return false, false, fmt.Errorf("response payload has no boolean isChecked")
+	}
+	draftState, ok := payload["draftState"].(bool)
+	if !ok {
+		return false, false, fmt.Errorf("response payload has no boolean draftState")
+	}
+	return checked, draftState, nil
+}
+
+func doneRecoveryMessage(draftState, retryOutcomeUnknown bool) string {
+	qualifier := ""
+	if retryOutcomeUnknown {
+		qualifier = " The retry outcome is unknown; inspect the comment first."
+	}
+	if draftState {
+		return "The first confirmed state contains a pending undo-Done draft." + qualifier +
+			" Rerun done for this comment before submitting any drafts, or clear the pending state in Phabricator."
+	}
+	return "The first confirmed state cleared the pending Done draft." + qualifier +
+		" Rerun done for this comment before submitting."
 }
 
 func (s *feedbackService) rate(revision string, targets []string, helpful bool) (commentActionResult, error) {
@@ -567,7 +843,7 @@ func (s *feedbackService) rate(revision string, targets []string, helpful bool) 
 		helpfulness := helpful
 		results = append(results, commentAction{CommentID: identifier, Helpful: &helpfulness, Message: payload["message"]})
 	}
-	return commentActionResult{RevisionID: revisionID, MozillaReviewHelper: true, Comments: results}, nil
+	return commentActionResult{RevisionID: revisionID, Action: "rate", MozillaReviewHelper: true, Comments: results}, nil
 }
 
 func (s *feedbackService) submit(revision string) (submissionResult, error) {
@@ -575,18 +851,73 @@ func (s *feedbackService) submit(revision string) (submissionResult, error) {
 	if err != nil {
 		return submissionResult{}, err
 	}
+	result := submissionResult{
+		RevisionID: revisionID, Action: "submit", Outcome: submissionOutcomeNotAttempted,
+	}
 	csrf, err := s.web.csrf()
 	if err != nil {
-		return submissionResult{}, err
+		result.Outcome = submissionOutcomeBlocked
+		result.Recovery = "The CSRF token could not be loaded."
+		return result, &mutationResultError{
+			result: result,
+			err:    fmt.Errorf("%s: %w", result.Recovery, err),
+		}
 	}
+	result.Attempted = true
+	result.Outcome = submissionOutcomeUnknown
 	response, err := s.web.post(fmt.Sprintf("/differential/revision/edit/%d/comment/", revisionID), map[string]string{
 		"__csrf__": csrf, "__form__": "1", "editengine.actions": "[]", "comment": "", "comment_metadata": "{}", "__ajax__": "true",
 	})
 	if err != nil {
-		return submissionResult{}, err
+		result.OutcomeUnknown = true
+		result.Recovery = "The submission outcome is unknown. Inspect the revision before retrying."
+		return result, &mutationResultError{result: result, err: fmt.Errorf("%s: %w", result.Recovery, err)}
 	}
-	payload, _ := mapValue(response["payload"])
-	return submissionResult{RevisionID: revisionID, Submitted: true, Redirect: payload["redirect"]}, nil
+	payload, ok := mapValue(response["payload"])
+	if !ok {
+		result.OutcomeUnknown = true
+		result.Recovery = "The submission response was invalid. Inspect the revision before retrying."
+		return result, &mutationResultError{result: result, err: errors.New(result.Recovery)}
+	}
+	redirect := strings.TrimSpace(stringValue(payload["redirect"]))
+	if redirect == "" {
+		result.Dialog = boundedDialogText(payload["dialog"])
+		if result.Dialog == "" {
+			result.OutcomeUnknown = true
+			result.Recovery = "The submission response contained no redirect. Inspect the revision before retrying."
+			return result, &mutationResultError{
+				result: result,
+				err:    errors.New(result.Recovery),
+			}
+		}
+		result.Outcome = submissionOutcomeRejected
+		result.Recovery = "No drafts were published. Resolve the Phabricator dialog, especially any unsaved inline comment or warning, then retry."
+		return result, &mutationResultError{
+			result: result,
+			err:    fmt.Errorf("submission was not accepted; Phabricator returned a dialog: %s; %s", result.Dialog, result.Recovery),
+		}
+	}
+	result.Outcome = submissionOutcomeSubmitted
+	result.Submitted = true
+	result.Redirect = redirect
+	return result, nil
+}
+
+func unattemptedSubmission(revisionID int, recovery string) *submissionResult {
+	return &submissionResult{
+		RevisionID: revisionID, Action: "submit",
+		Outcome: submissionOutcomeNotAttempted, Recovery: recovery,
+	}
+}
+
+func boundedDialogText(value any) string {
+	summary := safe(strings.TrimSpace(stringValue(value)))
+	const maxDialogRunes = 500
+	runes := []rune(summary)
+	if len(runes) > maxDialogRunes {
+		summary = string(runes[:maxDialogRunes-3]) + "..."
+	}
+	return summary
 }
 
 func (s *feedbackService) requestAIReview(revision string) (aiReviewResult, error) {
@@ -606,19 +937,45 @@ func (s *feedbackService) requestAIReview(revision string) (aiReviewResult, erro
 	} else if strings.Contains(dialog, "being processed") {
 		status = "already-in-progress"
 	}
-	return aiReviewResult{RevisionID: revisionID, MozillaReviewHelper: true, Status: status}, nil
+	return aiReviewResult{RevisionID: revisionID, Action: "ai-review", MozillaReviewHelper: true, Status: status}, nil
 }
 
 func (s *feedbackService) validateComments(revision string, values []string, expectedType string) ([]int, error) {
+	comments, err := s.validateCommentRecords(revision, values, expectedType)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int, 0, len(comments))
+	for _, comment := range comments {
+		ids = append(ids, comment.ID)
+	}
+	return ids, nil
+}
+
+type validatedComment struct {
+	ID      int
+	Comment map[string]any
+}
+
+func (s *feedbackService) validateInlineComments(revision string, values []string) ([]validatedComment, error) {
+	return s.validateCommentRecords(revision, values, "inline")
+}
+
+func (s *feedbackService) validateCommentRecords(revision string, values []string, expectedType string) ([]validatedComment, error) {
 	if len(values) == 0 {
 		return nil, fmt.Errorf("at least one comment ID is required")
 	}
 	ids := make([]int, 0, len(values))
+	seen := map[int]bool{}
 	for _, value := range values {
 		identifier, err := commentID(value)
 		if err != nil {
 			return nil, err
 		}
+		if seen[identifier] {
+			return nil, fmt.Errorf("comment %d was specified more than once", identifier)
+		}
+		seen[identifier] = true
 		ids = append(ids, identifier)
 	}
 	transactions, err := s.revisionTransactions(revision)
@@ -636,6 +993,7 @@ func (s *feedbackService) validateComments(revision string, values []string, exp
 		}
 	}
 	revisionID, _ := revisionNumber(revision)
+	result := make([]validatedComment, 0, len(ids))
 	for _, identifier := range ids {
 		transaction := byID[identifier]
 		if transaction == nil {
@@ -648,11 +1006,16 @@ func (s *feedbackService) validateComments(revision string, values []string, exp
 		if actual != expectedType {
 			return nil, fmt.Errorf("comment %d is a %s transaction, not %s", identifier, actual, expectedType)
 		}
-		if activeComment(transaction) == nil {
+		comment := activeComment(transaction)
+		if comment == nil {
 			return nil, fmt.Errorf("comment %d has been removed", identifier)
 		}
+		if expectedType == "inline" && stringValue(comment["phid"]) == "" {
+			return nil, fmt.Errorf("inline comment %d has no PHID", identifier)
+		}
+		result = append(result, validatedComment{ID: identifier, Comment: comment})
 	}
-	return ids, nil
+	return result, nil
 }
 
 func (s *feedbackService) findComment(revision, target, expectedType string) (map[string]any, map[string]any, error) {

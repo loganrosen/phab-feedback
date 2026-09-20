@@ -1,6 +1,6 @@
 ---
 name: phab-feedback
-description: Discover, inspect, and act on Phabricator or Phorge Differential feedback with the phab-feedback CLI. Use for reviewer or author revision queues, revision summaries, unresolved inline threads, chronological timelines, exact general or inline comment IDs, inline-thread reply drafts, accidental top-level comment removal, Done drafts, explicit draft submission, and Mozilla Review Helper ratings or AI review requests. Trigger when an agent needs deterministic review metadata, must classify feedback across diff versions, needs to triage review work, or is ready to perform a user-approved feedback mutation.
+description: Discover, inspect, verify, and act on Phabricator or Phorge Differential feedback with the phab-feedback CLI. Use for reviewer or author revision queues, revision summaries, unresolved inline threads, chronological timelines, exact general or inline comment IDs, inline-thread reply drafts, batch reply and Done manifests, accidental top-level comment removal, explicit draft submission, reply-link and visible Done verification, and Mozilla Review Helper ratings or AI review requests. Trigger when an agent needs deterministic review metadata, must classify feedback across diff versions, needs to triage review work, or is ready to perform a user-approved feedback mutation.
 ---
 
 # Phabricator feedback
@@ -59,11 +59,61 @@ approval. Prefer message files or stdin:
 - Treat `remove-comment` as an immediate removal after type validation.
 - Treat `reply` and `done` as draft creation.
 - Run `D123 submit` only after separate approval to publish all pending drafts.
+- Before any submission, warn that Phabricator publishes every eligible pending
+  inline draft owned by the current user on that revision, including unrelated
+  drafts created earlier in the browser or by another command.
+- Do not override Phabricator submission warnings. Treat every dialog,
+  including `Empty Comment` and `Action(s) With No Effect`, as blocked
+  publication. Surface the bounded dialog response to the user. When an inline
+  is still being edited, have the user save or close that editor, re-inspect
+  pending drafts, and approve a retry.
 - Use `D123 reply ... --submit` only when combined creation and publication
   were explicitly approved.
+- Use `D123 reply ... --done` only when the reply and Done action were both
+  explicitly approved. Add `--submit` only when publication was also approved.
+- Use `D123 done ... --submit` only when drafting the Done states and publishing
+  all pending drafts were both explicitly approved.
 - Use `remove-comment` only for an accidental top-level comment.
 
 Never combine reply, Done, removal, or submission actions implicitly.
+If a `done` command is interrupted, inspect the comment and rerun `done` before
+any later submission; the upstream toggle may have left a pending undo-Done
+draft without returning a result.
+
+## Batch approved actions
+
+For several approved inline actions on one revision, write a JSON manifest with
+the exact revision, comment IDs, reply text, and optional `done: true` values:
+
+```json
+{
+  "revision": "D123",
+  "actions": [
+    {"comment_id": 456, "reply": "Updated as requested.", "done": true},
+    {"comment_id": 457, "done": true}
+  ]
+}
+```
+
+Validate it before acting:
+
+```bash
+"${PHAB_FEEDBACK[@]}" batch actions.json --dry-run --format json
+```
+
+Run without `--submit` to create drafts only. Add `--submit` only when one final
+publication of all pending drafts was explicitly approved. The CLI validates
+the complete manifest and all target comments before mutation, creates drafts
+in order, submits at most once, and reports unavoidable remote partial failures.
+The final submission is revision-wide for the current user, not scoped to the
+manifest. If all requested Done states are already published and the batch
+creates no new draft, the CLI reports `outcome: "not-attempted"` so it does not
+publish unrelated drafts; use the standalone `submit` command only after
+separate approval if those existing drafts should be published.
+Treat `outcome: "blocked"` as a failed pre-request prerequisite, not a benign
+skip; fix the reported credential or CSRF problem before asking to retry.
+`outcome: "not-attempted"` can also follow an earlier reply or Done failure;
+check the command exit status and `recovery` before treating it as benign.
 
 ## Isolate Mozilla-only actions
 
@@ -72,8 +122,23 @@ Helper actions. Ratings and AI review requests take effect immediately. Request
 AI review only after the relevant changes are published and the user selected
 that reviewer.
 
-## Verify published replies
+## Verify reply linkage and visible Done state
 
-After submission, run `D123 --timeline` and confirm each reply's
-`reply_to_comment_id` matches the approved parent. Do not mark the parent Done
-without separate approval.
+After submission, use `verify` with each expected reply-parent pair and Done
+state:
+
+```bash
+"${PHAB_FEEDBACK[@]}" D123 verify \
+  --reply 901:456 \
+  --done 456 \
+  --format json
+```
+
+The command exits nonzero if a visible reply is missing, the direct parent does
+not match, or Conduit reports a requested comment as not Done. It does not
+independently prove reply publication. Upstream Conduit also reports
+`isDone=true` for both published Done and a pending undo-Done draft, so treat
+Done verification status `observed` and the per-comment
+`done-or-pending-undo` state as visible-state checks, not definitive
+publication proof. Inspect the revision before submission when pending state
+matters. Do not mark the parent Done without separate approval.

@@ -211,21 +211,35 @@ func TestMutationTextOutput(t *testing.T) {
 		{
 			command: "reply",
 			result: inlineReplyResult{
-				RevisionID: 12, ParentCommentID: 34, DraftCommentID: 56,
-				Submission: &submissionResult{RevisionID: 12},
+				RevisionID: 12, ParentCommentID: 34, DraftCommentID: 56, CreatedReplyID: 56,
+				Saved:      true,
+				Submission: &submissionResult{RevisionID: 12, Submitted: true},
 			},
-			want: "Drafted inline reply #56 to comment #34 on D12.\nSubmitted pending drafts on D12.",
+			want: "Drafted inline reply #56 to comment #34 on D12.\nSubmitted every pending draft you own on D12.",
 		},
 		{
 			command: "done",
 			result: commentActionResult{
 				RevisionID: 12,
 				Comments: []commentAction{
-					{CommentID: 34},
-					{CommentID: 35},
+					{CommentID: 34, Draft: new(true)},
+					{CommentID: 35, Draft: new(true)},
 				},
 			},
-			want: "Marked #34, #35 Done as drafts on D12.",
+			want: "Created Done drafts for #34, #35 on D12.",
+		},
+		{
+			command: "reply",
+			result: inlineReplyResult{
+				RevisionID: 12, ParentCommentID: 34, CreatedReplyID: 56,
+				Saved: true, Draft: true,
+				Submission: unattemptedSubmission(
+					12,
+					"The parent Done action failed.",
+				),
+			},
+			want: "Drafted inline reply #56 to comment #34 on D12.\n" +
+				"Submission was not attempted on D12: The parent Done action failed.",
 		},
 		{
 			command: "ai-review",
@@ -233,6 +247,7 @@ func TestMutationTextOutput(t *testing.T) {
 			want:    "A Review Helper AI review is already in progress on D12.",
 		},
 	}
+
 	for _, test := range tests {
 		t.Run(test.command, func(t *testing.T) {
 			got, err := renderText(test.command, test.result)
@@ -243,5 +258,226 @@ func TestMutationTextOutput(t *testing.T) {
 				t.Fatalf("text output = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestDoneFailureTextPreservesEarlierConfirmedComments(t *testing.T) {
+	got := ansi.Strip(renderDone(commentActionResult{
+		RevisionID: 12,
+		Comments: []commentAction{
+			{CommentID: 34, Draft: new(true)},
+			{CommentID: 35, Recovery: "Rerun done before submitting."},
+		},
+		NotAttempted: []int{36, 37},
+	}))
+	want := "Created Done drafts for #34 on D12.\n" +
+		"Done action for comment #35 on D12 requires recovery: Rerun done before submitting.\n" +
+		"Not attempted: #36, #37."
+	if got != want {
+		t.Fatalf("text output = %q, want %q", got, want)
+	}
+}
+
+func TestBatchUnchangedTextExplainsUnattemptedSubmission(t *testing.T) {
+	got := ansi.Strip(renderBatch(batchResult{
+		RevisionID: 12,
+		State:      "unchanged",
+		Submission: &submissionResult{
+			Outcome:  "not-attempted",
+			Recovery: "The batch created no new drafts; existing revision drafts remain unpublished.",
+		},
+	}))
+	want := "Submission was not attempted on D12: The batch created no new drafts; existing revision drafts remain unpublished."
+	if got != want {
+		t.Fatalf("text output = %q, want %q", got, want)
+	}
+}
+
+func TestSubmissionTextDistinguishesOutcomes(t *testing.T) {
+	tests := []struct {
+		name   string
+		result submissionResult
+		want   string
+	}{
+		{
+			name: "not attempted",
+			result: submissionResult{
+				RevisionID: 12, Outcome: submissionOutcomeNotAttempted,
+				Recovery: "No new drafts were created.",
+			},
+			want: "Submission was not attempted on D12: No new drafts were created.",
+		},
+		{
+			name: "blocked",
+			result: submissionResult{
+				RevisionID: 12, Outcome: submissionOutcomeBlocked,
+				Recovery: "The CSRF token could not be loaded.",
+			},
+			want: "Submission was blocked before it was attempted on D12: The CSRF token could not be loaded.",
+		},
+		{
+			name: "rejected",
+			result: submissionResult{
+				RevisionID: 12, Outcome: submissionOutcomeRejected,
+				Dialog: "An inline comment is still being edited.",
+			},
+			want: "Submission was rejected on D12: An inline comment is still being edited.",
+		},
+		{
+			name:   "unknown without detail",
+			result: submissionResult{RevisionID: 12, Outcome: submissionOutcomeUnknown},
+			want:   "Submission outcome is unknown on D12.",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := renderText("submit", test.result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ansi.Strip(got) != test.want {
+				t.Fatalf("text output = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestReplyFailureTextIncludesSubmissionStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		result inlineReplyResult
+		want   string
+	}{
+		{
+			name: "creation unconfirmed",
+			result: inlineReplyResult{
+				RevisionID: 12, ParentCommentID: 34,
+				Submission: unattemptedSubmission(12, "The reply draft was not created successfully."),
+			},
+			want: "Could not confirm reply creation for comment #34 on D12.\n" +
+				"Submission was not attempted on D12: The reply draft was not created successfully.",
+		},
+		{
+			name: "save unconfirmed",
+			result: inlineReplyResult{
+				RevisionID: 12, ParentCommentID: 34, CreatedReplyID: 56,
+				Submission: unattemptedSubmission(12, "The reply draft was not created successfully."),
+			},
+			want: "Created inline reply #56 to comment #34 on D12, but did not confirm its saved state.\n" +
+				"Submission was not attempted on D12: The reply draft was not created successfully.",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := ansi.Strip(renderInlineReply(test.result))
+			if got != test.want {
+				t.Fatalf("text output = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestBatchSubmissionFailureTextIncludesOutcome(t *testing.T) {
+	got := ansi.Strip(renderBatch(batchResult{
+		RevisionID: 12,
+		State:      "partial",
+		Failure:    &batchFailure{Action: "submit", CompletedMutations: 2},
+		Submission: &submissionResult{
+			RevisionID: 12, Outcome: submissionOutcomeRejected,
+			Dialog: "An inline comment is still being edited.",
+		},
+	}))
+	want := "Batch submission stopped after 2 completed mutations on D12.\n" +
+		"Submission was rejected on D12: An inline comment is still being edited."
+	if got != want {
+		t.Fatalf("text output = %q, want %q", got, want)
+	}
+}
+
+func TestBatchAndMutationHelpExposeExplicitPublicationFlags(t *testing.T) {
+	tests := []struct {
+		args []string
+		want []string
+	}{
+		{args: []string{"batch", "--help"}, want: []string{"MANIFEST", "--dry-run", "--submit"}},
+		{args: []string{"D123", "reply", "--help"}, want: []string{"--done", "--submit"}},
+		{args: []string{"D123", "done", "--help"}, want: []string{"--submit"}},
+		{args: []string{"D123", "verify", "--help"}, want: []string{"REPLY_ID:PARENT_ID", "--done"}},
+	}
+	for _, test := range tests {
+		var output bytes.Buffer
+		root := newRootCommand(test.args, strings.NewReader(""), &output, &output)
+		root.SetArgs(test.args)
+		if err := root.Execute(); err != nil {
+			t.Fatalf("%v: %v", test.args, err)
+		}
+		for _, expected := range test.want {
+			if !strings.Contains(output.String(), expected) {
+				t.Fatalf("%v help missing %q:\n%s", test.args, expected, output.String())
+			}
+		}
+	}
+}
+
+func TestSubmitHelpWarnsAboutRevisionWideDraftPublication(t *testing.T) {
+	tests := [][]string{
+		{"D123", "reply", "--help"},
+		{"D123", "done", "--help"},
+		{"D123", "submit", "--help"},
+		{"batch", "--help"},
+	}
+	for _, args := range tests {
+		var output bytes.Buffer
+		root := newRootCommand(args, strings.NewReader(""), &output, &output)
+		root.SetArgs(args)
+		if err := root.Execute(); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		for _, expected := range []string{"every pending draft you own", "never override warnings"} {
+			if !strings.Contains(output.String(), expected) {
+				t.Fatalf("%v help omits %q:\n%s", args, expected, output.String())
+			}
+		}
+	}
+}
+
+func TestVerificationTextIncludesLimitations(t *testing.T) {
+	got := ansi.Strip(renderVerification(verificationResult{
+		RevisionID:   12,
+		Status:       "observed",
+		ChecksPassed: true,
+		Done:         []doneVerification{{CommentID: 34, Found: true, ConduitIsDone: true}},
+		Limitations: []string{
+			"Conduit isDone cannot distinguish published Done from a pending undo-Done draft.",
+		},
+	}))
+	want := "Observed 0 reply links and 1 ambiguous Conduit Done indicators on D12.\n" +
+		"Limitation: Conduit isDone cannot distinguish published Done from a pending undo-Done draft."
+	if got != want {
+		t.Fatalf("text output = %q, want %q", got, want)
+	}
+}
+
+func TestBatchFailureTextHandlesMissingDetails(t *testing.T) {
+	got := ansi.Strip(renderBatch(batchResult{RevisionID: 12, State: "partial"}))
+	if got != "Batch stopped after an unreported failure on D12." {
+		t.Fatalf("text output = %q", got)
+	}
+}
+
+func TestFirefoxHelpExplainsAutomaticDiscoveryAndProfileRestriction(t *testing.T) {
+	var output bytes.Buffer
+	root := newRootCommand([]string{"--help"}, strings.NewReader(""), &output, &output)
+	root.SetArgs([]string{"--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"Report Firefox discovery failures directly (discovery is automatic)",
+		"Restrict Firefox cookie discovery to this profile",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("help missing %q:\n%s", expected, output.String())
+		}
 	}
 }
