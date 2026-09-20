@@ -254,9 +254,11 @@ Mutation JSON includes the revision and action plus operation-specific fields
 such as `created_reply_id`, `parent_comment_id`, `draft`, `published`, and
 `final_done`. Submission results include `outcome`, `attempted`, `submitted`,
 and, when applicable, a bounded plain-text `dialog`, `outcome_unknown`, or
-`recovery`. `outcome: "not-attempted"` distinguishes a client-side safety skip
-from the server-confirmed `no-effect` outcome. Batch dry-run entries instead
-use `planned: true`; they do not claim draft, publication, or final Done state
+`recovery`. `outcome: "not-attempted"` identifies a deliberate workflow skip,
+while `outcome: "blocked"` identifies a pre-request failure such as an
+unavailable CSRF token. Both have `attempted: false`; the server-confirmed
+`no-effect` outcome has `attempted: true`. Batch dry-run entries instead use
+`planned: true`; they do not claim draft, publication, or final Done state
 before mutation.
 If a Done retry fails, `observed_checked` and `observed_draft_state` describe
 only the last confirmed response; normal result fields remain absent because

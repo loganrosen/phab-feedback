@@ -111,6 +111,8 @@ manifest. If all requested Done states are already published and the batch
 creates no new draft, the CLI reports `outcome: "not-attempted"` so it does not
 publish unrelated drafts; use the standalone `submit` command only after
 separate approval if those existing drafts should be published.
+Treat `outcome: "blocked"` as a failed pre-request prerequisite, not a benign
+skip; fix the reported credential or CSRF problem before asking to retry.
 
 ## Isolate Mozilla-only actions
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -492,7 +493,7 @@ func (s *feedbackService) draftInlineReplyValidated(revisionID int, parent valid
 	savedInline, inlineOK := mapValue(savedPayload["inline"])
 	savedID, idOK := intValue(savedInline["id"])
 	if !ok || !inlineOK || !idOK || savedID != replyID {
-		dialog := summarizeDialog(savedPayload["dialog"])
+		dialog := parseDialog(savedPayload["dialog"]).Text
 		detail := "the save response did not include a rendered inline"
 		if dialog != "" {
 			detail = "Phabricator returned a dialog: " + dialog
@@ -524,6 +525,12 @@ func (s *feedbackService) reply(revision, parent, message string, done, submit b
 	}
 	result, err := s.draftInlineReplyValidated(revisionID, comments[0], message)
 	if err != nil {
+		if submit {
+			result.Submission = unattemptedSubmission(
+				revisionID,
+				"The reply draft was not created successfully.",
+			)
+		}
 		if done {
 			return result, &mutationResultError{
 				result: result,
@@ -540,15 +547,17 @@ func (s *feedbackService) reply(revision, parent, message string, done, submit b
 			result.FinalDone = doneResult.Comments[0].FinalDone
 		}
 		if doneErr != nil {
-			submissionStatus := ""
 			if submit {
-				submissionStatus = "; submission was not attempted"
+				result.Submission = unattemptedSubmission(
+					revisionID,
+					"The parent Done action failed.",
+				)
 			}
 			return result, &mutationResultError{
 				result: result,
 				err: fmt.Errorf(
-					"remote partial failure: reply %d was drafted but comment %d was not marked Done: %w%s",
-					result.CreatedReplyID, comments[0].ID, doneErr, submissionStatus,
+					"remote partial failure: reply %d was drafted but comment %d was not marked Done: %w",
+					result.CreatedReplyID, comments[0].ID, doneErr,
 				),
 			}
 		}
@@ -644,9 +653,13 @@ func (s *feedbackService) markDone(revision string, targets []string, submit boo
 	result, err := s.markDoneValidated(revisionID, comments)
 	if err != nil {
 		if submit {
+			result.Submission = unattemptedSubmission(
+				revisionID,
+				"A Done action failed.",
+			)
 			return result, &mutationResultError{
 				result: result,
-				err:    fmt.Errorf("%w; submission was not attempted", err),
+				err:    err,
 			}
 		}
 		return result, err
@@ -655,10 +668,10 @@ func (s *feedbackService) markDone(revision string, targets []string, submit boo
 		return result, nil
 	}
 	if !commentActionsHaveDraft(result.Comments) {
-		result.Submission = &submissionResult{
-			RevisionID: revisionID, Action: "submit", Outcome: "not-attempted",
-			Recovery: "All target comments were already published Done; no submission was attempted, so existing unrelated drafts remain unpublished.",
-		}
+		result.Submission = unattemptedSubmission(
+			revisionID,
+			"All target comments were already published Done; existing unrelated drafts remain unpublished.",
+		)
 		return result, nil
 	}
 	submission, err := s.submit(revision)
@@ -840,17 +853,20 @@ func (s *feedbackService) submit(revision string) (submissionResult, error) {
 	if err != nil {
 		return submissionResult{}, err
 	}
-	result := submissionResult{RevisionID: revisionID, Action: "submit", Outcome: "not-attempted"}
+	result := submissionResult{
+		RevisionID: revisionID, Action: "submit", Outcome: submissionOutcomeNotAttempted,
+	}
 	csrf, err := s.web.csrf()
 	if err != nil {
-		result.Recovery = "Submission was not attempted because the CSRF token could not be loaded."
+		result.Outcome = submissionOutcomeBlocked
+		result.Recovery = "The CSRF token could not be loaded."
 		return result, &mutationResultError{
 			result: result,
 			err:    fmt.Errorf("%s: %w", result.Recovery, err),
 		}
 	}
 	result.Attempted = true
-	result.Outcome = "unknown"
+	result.Outcome = submissionOutcomeUnknown
 	response, err := s.web.post(fmt.Sprintf("/differential/revision/edit/%d/comment/", revisionID), map[string]string{
 		"__csrf__": csrf, "__form__": "1", "editengine.actions": "[]", "comment": "", "comment_metadata": "{}", "__ajax__": "true",
 	})
@@ -867,9 +883,10 @@ func (s *feedbackService) submit(revision string) (submissionResult, error) {
 	}
 	redirect := strings.TrimSpace(stringValue(payload["redirect"]))
 	if redirect == "" {
-		result.Dialog = summarizeDialog(payload["dialog"])
-		if isEmptyCommentDialog(result.Dialog) {
-			result.Outcome = "no-effect"
+		dialog := parseDialog(payload["dialog"])
+		result.Dialog = dialog.Text
+		if isEmptyCommentDialog(dialog.Title) {
+			result.Outcome = submissionOutcomeNoEffect
 			result.Recovery = "No publishable drafts were found."
 			return result, nil
 		}
@@ -881,56 +898,131 @@ func (s *feedbackService) submit(revision string) (submissionResult, error) {
 				err:    errors.New(result.Recovery),
 			}
 		}
-		result.Outcome = "rejected"
+		result.Outcome = submissionOutcomeRejected
 		result.Recovery = "No drafts were published. Resolve the Phabricator dialog, especially any unsaved inline comment or warning, then retry."
 		return result, &mutationResultError{
 			result: result,
 			err:    fmt.Errorf("submission was not accepted; Phabricator returned a dialog: %s; %s", result.Dialog, result.Recovery),
 		}
 	}
-	result.Outcome = "submitted"
+	result.Outcome = submissionOutcomeSubmitted
 	result.Submitted = true
 	result.Redirect = redirect
 	return result, nil
 }
 
-func isEmptyCommentDialog(dialog string) bool {
-	normalized := strings.ToLower(dialog)
-	return strings.Contains(normalized, "empty comment") ||
-		strings.Contains(normalized, "you can not post an empty comment") ||
-		strings.Contains(normalized, "you cannot post an empty comment")
+func unattemptedSubmission(revisionID int, recovery string) *submissionResult {
+	return &submissionResult{
+		RevisionID: revisionID, Action: "submit",
+		Outcome: submissionOutcomeNotAttempted, Recovery: recovery,
+	}
 }
 
-func summarizeDialog(value any) string {
+type dialogSummary struct {
+	Title string
+	Text  string
+}
+
+func isEmptyCommentDialog(title string) bool {
+	return strings.EqualFold(strings.TrimSpace(title), "Empty Comment")
+}
+
+func parseDialog(value any) dialogSummary {
 	raw := strings.TrimSpace(stringValue(value))
 	if raw == "" {
-		return ""
+		return dialogSummary{}
 	}
-	var text strings.Builder
-	inTag := false
-	for _, character := range raw {
-		switch character {
-		case '<':
-			if !inTag {
-				text.WriteByte(' ')
+	var text, title strings.Builder
+	titleTag := ""
+	for position := 0; position < len(raw); {
+		if raw[position] != '<' || !htmlTagStart(raw, position+1) {
+			text.WriteByte(raw[position])
+			if titleTag != "" {
+				title.WriteByte(raw[position])
 			}
-			inTag = true
-		case '>':
-			if inTag {
-				inTag = false
-				text.WriteByte(' ')
+			position++
+			continue
+		}
+		end := strings.IndexByte(raw[position+1:], '>')
+		if end < 0 {
+			text.WriteByte(raw[position])
+			if titleTag != "" {
+				title.WriteByte(raw[position])
 			}
-		default:
-			if !inTag {
-				text.WriteRune(character)
-			}
+			position++
+			continue
+		}
+		end += position + 1
+		tag := strings.TrimSpace(raw[position+1 : end])
+		name, closing := htmlTagName(tag)
+		if closing && name == titleTag {
+			titleTag = ""
+		} else if !closing && hasHTMLClass(tag, "aphront-dialog-head") {
+			titleTag = name
+		}
+		text.WriteByte(' ')
+		if titleTag != "" {
+			title.WriteByte(' ')
+		}
+		position = end + 1
+	}
+	return dialogSummary{
+		Title: plainDialogText(title.String(), 200),
+		Text:  plainDialogText(text.String(), 500),
+	}
+}
+
+func htmlTagStart(value string, position int) bool {
+	if position >= len(value) {
+		return false
+	}
+	character := value[position]
+	return character == '/' || character == '!' || character == '?' ||
+		(character >= 'A' && character <= 'Z') ||
+		(character >= 'a' && character <= 'z')
+}
+
+func htmlTagName(tag string) (string, bool) {
+	closing := strings.HasPrefix(tag, "/")
+	tag = strings.TrimLeft(tag, "/!? ")
+	end := strings.IndexAny(tag, " \t\r\n/>")
+	if end >= 0 {
+		tag = tag[:end]
+	}
+	return strings.ToLower(tag), closing
+}
+
+func hasHTMLClass(tag, className string) bool {
+	lower := strings.ToLower(tag)
+	for _, quote := range []byte{'"', '\''} {
+		marker := "class=" + string(quote)
+		start := strings.Index(lower, marker)
+		if start < 0 {
+			continue
+		}
+		start += len(marker)
+		end := strings.IndexByte(lower[start:], quote)
+		if end < 0 {
+			continue
+		}
+		if slices.Contains(strings.Fields(lower[start:start+end]), className) {
+			return true
 		}
 	}
-	summary := safe(strings.Join(strings.Fields(html.UnescapeString(text.String())), " "))
+	return false
+}
+
+func plainDialogText(value string, limit int) string {
+	summary := strings.Join(strings.Fields(html.UnescapeString(value)), " ")
+	summary = strings.NewReplacer("<", `\x3c`, ">", `\x3e`).Replace(summary)
+	summary = safe(summary)
 	const maxDialogRunes = 500
 	runes := []rune(summary)
-	if len(runes) > maxDialogRunes {
-		summary = string(runes[:maxDialogRunes-3]) + "..."
+	if limit <= 0 {
+		limit = maxDialogRunes
+	}
+	if len(runes) > limit {
+		summary = string(runes[:limit-3]) + "..."
 	}
 	return summary
 }

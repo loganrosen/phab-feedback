@@ -229,6 +229,19 @@ func TestMutationTextOutput(t *testing.T) {
 			want: "Created Done drafts for #34, #35 on D12.",
 		},
 		{
+			command: "reply",
+			result: inlineReplyResult{
+				RevisionID: 12, ParentCommentID: 34, CreatedReplyID: 56,
+				Saved: true, Draft: true,
+				Submission: unattemptedSubmission(
+					12,
+					"The parent Done action failed.",
+				),
+			},
+			want: "Drafted inline reply #56 to comment #34 on D12.\n" +
+				"Submission was not attempted on D12: The parent Done action failed.",
+		},
+		{
 			command: "ai-review",
 			result:  aiReviewResult{RevisionID: 12, Status: "already-in-progress"},
 			want:    "A Review Helper AI review is already in progress on D12.",
@@ -271,16 +284,16 @@ func TestBatchUnchangedTextExplainsUnattemptedSubmission(t *testing.T) {
 		State:      "unchanged",
 		Submission: &submissionResult{
 			Outcome:  "not-attempted",
-			Recovery: "The batch created no new drafts; existing revision drafts were not submitted.",
+			Recovery: "The batch created no new drafts; existing revision drafts remain unpublished.",
 		},
 	}))
-	want := "Submission was not attempted on D12: The batch created no new drafts; existing revision drafts were not submitted."
+	want := "Submission was not attempted on D12: The batch created no new drafts; existing revision drafts remain unpublished."
 	if got != want {
 		t.Fatalf("text output = %q, want %q", got, want)
 	}
 }
 
-func TestSubmissionTextDistinguishesNoEffectAndNotAttempted(t *testing.T) {
+func TestSubmissionTextDistinguishesOutcomes(t *testing.T) {
 	tests := []struct {
 		name   string
 		result submissionResult
@@ -288,16 +301,32 @@ func TestSubmissionTextDistinguishesNoEffectAndNotAttempted(t *testing.T) {
 	}{
 		{
 			name:   "server no effect",
-			result: submissionResult{RevisionID: 12, Outcome: "no-effect", Attempted: true},
+			result: submissionResult{RevisionID: 12, Outcome: submissionOutcomeNoEffect, Attempted: true},
 			want:   "No publishable drafts were found on D12.",
 		},
 		{
 			name: "not attempted",
 			result: submissionResult{
-				RevisionID: 12, Outcome: "not-attempted",
+				RevisionID: 12, Outcome: submissionOutcomeNotAttempted,
 				Recovery: "No new drafts were created.",
 			},
 			want: "Submission was not attempted on D12: No new drafts were created.",
+		},
+		{
+			name: "blocked",
+			result: submissionResult{
+				RevisionID: 12, Outcome: submissionOutcomeBlocked,
+				Recovery: "The CSRF token could not be loaded.",
+			},
+			want: "Submission was blocked before it was attempted on D12: The CSRF token could not be loaded.",
+		},
+		{
+			name: "rejected",
+			result: submissionResult{
+				RevisionID: 12, Outcome: submissionOutcomeRejected,
+				Dialog: "An inline comment is still being edited.",
+			},
+			want: "Submission was rejected on D12: An inline comment is still being edited.",
 		},
 	}
 	for _, test := range tests {

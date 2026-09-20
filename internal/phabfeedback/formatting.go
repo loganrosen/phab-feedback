@@ -55,16 +55,7 @@ func renderText(command string, result any) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if value.Outcome == "not-attempted" {
-			return detailStyle.Render(fmt.Sprintf("Submission was not attempted on D%d: %s", value.RevisionID, value.Recovery)), nil
-		}
-		if value.Outcome == "no-effect" {
-			return detailStyle.Render(fmt.Sprintf("No publishable drafts were found on D%d.", value.RevisionID)), nil
-		}
-		if !value.Submitted {
-			return decisionStyle("unresolved").Render(fmt.Sprintf("Submission was not confirmed on D%d.", value.RevisionID)), nil
-		}
-		return successStyle.Render(fmt.Sprintf("Submitted every pending draft you own on D%d.", value.RevisionID)), nil
+		return renderSubmission(value), nil
 	case "rate-helpful":
 		value, err := typedResult[commentActionResult](result, command)
 		return renderCommentAction(value, "Rated", "helpful"), err
@@ -139,12 +130,8 @@ func renderInlineReply(result inlineReplyResult) string {
 			lines = append(lines, successStyle.Render(fmt.Sprintf("Confirmed comment #%d Done.", result.ParentCommentID)))
 		}
 	}
-	if result.Submission != nil && result.Submission.Submitted {
-		lines = append(lines, successStyle.Render(fmt.Sprintf("Submitted every pending draft you own on D%d.", result.Submission.RevisionID)))
-	} else if result.Submission != nil && result.Submission.Outcome == "not-attempted" {
-		lines = append(lines, detailStyle.Render(fmt.Sprintf(
-			"Submission was not attempted on D%d: %s", result.Submission.RevisionID, result.Submission.Recovery,
-		)))
+	if result.Submission != nil {
+		lines = append(lines, renderSubmission(*result.Submission))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -193,12 +180,8 @@ func renderDone(result commentActionResult) string {
 			"Confirmed %s Done on D%d.", strings.Join(confirmed, ", "), result.RevisionID,
 		)))
 	}
-	if result.Submission != nil && result.Submission.Submitted {
-		lines = append(lines, successStyle.Render(fmt.Sprintf("Submitted every pending draft you own on D%d.", result.RevisionID)))
-	} else if result.Submission != nil && result.Submission.Outcome == "not-attempted" {
-		lines = append(lines, detailStyle.Render(fmt.Sprintf(
-			"Submission was not attempted on D%d: %s", result.RevisionID, result.Submission.Recovery,
-		)))
+	if result.Submission != nil {
+		lines = append(lines, renderSubmission(*result.Submission))
 	}
 	lines = append(lines, recovery...)
 	if len(result.NotAttempted) > 0 {
@@ -217,6 +200,38 @@ func renderCommentAction(result commentActionResult, verb, outcome string) strin
 		ids = append(ids, fmt.Sprintf("#%d", comment.CommentID))
 	}
 	return successStyle.Render(fmt.Sprintf("%s %s %s on D%d.", verb, strings.Join(ids, ", "), outcome, result.RevisionID))
+}
+
+func renderSubmission(result submissionResult) string {
+	if result.Submitted {
+		return successStyle.Render(fmt.Sprintf(
+			"Submitted every pending draft you own on D%d.", result.RevisionID,
+		))
+	}
+	switch result.Outcome {
+	case submissionOutcomeNoEffect:
+		return detailStyle.Render(fmt.Sprintf("No publishable drafts were found on D%d.", result.RevisionID))
+	case submissionOutcomeNotAttempted:
+		return detailStyle.Render(fmt.Sprintf(
+			"Submission was not attempted on D%d: %s", result.RevisionID, result.Recovery,
+		))
+	case submissionOutcomeBlocked:
+		return decisionStyle("unresolved").Render(fmt.Sprintf(
+			"Submission was blocked before it was attempted on D%d: %s", result.RevisionID, result.Recovery,
+		))
+	case submissionOutcomeRejected:
+		detail := result.Dialog
+		if detail == "" {
+			detail = result.Recovery
+		}
+		return decisionStyle("unresolved").Render(fmt.Sprintf(
+			"Submission was rejected on D%d: %s", result.RevisionID, detail,
+		))
+	default:
+		return decisionStyle("unresolved").Render(fmt.Sprintf(
+			"Submission outcome is unknown on D%d: %s", result.RevisionID, result.Recovery,
+		))
+	}
 }
 
 func renderAIReview(result aiReviewResult) string {

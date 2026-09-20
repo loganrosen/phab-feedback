@@ -83,7 +83,7 @@ func TestSubmitRequiresRedirectConfirmation(t *testing.T) {
 				!strings.Contains(err.Error(), test.wantError) {
 				t.Fatalf("unexpected submission result: %#v %v", result, err)
 			}
-			if strings.Contains(result.Dialog, "<") {
+			if strings.ContainsAny(result.Dialog, "<>") {
 				t.Fatalf("dialog markup was not removed: %q", result.Dialog)
 			}
 		})
@@ -101,6 +101,22 @@ func TestSubmitTreatsEmptyCommentDialogAsNoEffect(t *testing.T) {
 	result, err := service.submit("D1")
 	if err != nil || !result.Attempted || result.Submitted || result.Outcome != "no-effect" ||
 		!strings.Contains(result.Dialog, "Empty Comment") {
+		t.Fatalf("unexpected submission result: %#v %v", result, err)
+	}
+}
+
+func TestSubmitClassifiesOnlyEmptyCommentTitleAsNoEffect(t *testing.T) {
+	service, _ := serviceWith(
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{
+			"dialog": `<div class="aphront-dialog-head">1 Action(s) With No Effect</div>
+				<div>You can not post an empty comment.</div>
+				<button>Apply Remaining Actions</button>`,
+		}}),
+	)
+	result, err := service.submit("D1")
+	if err == nil || result.Outcome != submissionOutcomeRejected ||
+		!strings.Contains(result.Dialog, "Apply Remaining Actions") {
 		t.Fatalf("unexpected submission result: %#v %v", result, err)
 	}
 }
@@ -124,18 +140,23 @@ func TestSubmitRejectsActionsWithNoEffectConfirmation(t *testing.T) {
 func TestSubmitReportsCSRFFailureAsNotAttempted(t *testing.T) {
 	service, _ := serviceWith(errors.New("csrf failed"))
 	result, err := service.submit("D1")
-	if err == nil || result.Attempted || result.Submitted || result.Outcome != "not-attempted" ||
+	if err == nil || result.Attempted || result.Submitted || result.Outcome != submissionOutcomeBlocked ||
 		!strings.Contains(result.Recovery, "CSRF") {
 		t.Fatalf("unexpected submission result: %#v %v", result, err)
 	}
 }
 
-func TestDialogSummaryStripsMarkupAndBoundsLength(t *testing.T) {
-	dialog := `<div>Warning &amp; details</div><p>` + strings.Repeat("x", 600) + `</p>`
-	result := summarizeDialog(dialog)
-	if strings.Contains(result, "<") || !strings.Contains(result, "Warning & details") ||
-		len([]rune(result)) > 500 || !strings.HasSuffix(result, "...") {
-		t.Fatalf("unexpected dialog summary: %q", result)
+func TestDialogSummaryProducesBoundedPlainText(t *testing.T) {
+	dialog := `<div class="aphront-dialog-head">Warning &amp; Details</div><p>` +
+		`Escaped &lt;script&gt; and literal 5 < 3 still has trailing guidance. ` +
+		strings.Repeat("x", 600) + `</p>`
+	result := parseDialog(dialog)
+	if result.Title != "Warning & Details" ||
+		strings.ContainsAny(result.Text, "<>") ||
+		!strings.Contains(result.Text, `Escaped \x3cscript\x3e`) ||
+		!strings.Contains(result.Text, `literal 5 \x3c 3 still has trailing guidance`) ||
+		len([]rune(result.Text)) > 500 || !strings.HasSuffix(result.Text, "...") {
+		t.Fatalf("unexpected dialog summary: %#v", result)
 	}
 }
 
@@ -165,6 +186,10 @@ func TestReplySaveRequiresInlineConfirmation(t *testing.T) {
 			payload: map[string]any{"inline": map[string]any{"id": 56}},
 			want:    "identified inline 56 instead of 55",
 		},
+		{
+			name:    "string inline ID",
+			payload: map[string]any{"inline": map[string]any{"id": "55"}},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -176,9 +201,13 @@ func TestReplySaveRequiresInlineConfirmation(t *testing.T) {
 				response(map[string]any{"payload": test.payload}),
 			)
 			result, err := service.draftInlineReply("D1", "20", "reply")
-			if err == nil || result.CreatedReplyID != 55 || result.Saved || result.Draft ||
+			if test.want == "" {
+				if err != nil || !result.Saved || !result.Draft {
+					t.Fatalf("unexpected reply result: %#v %v", result, err)
+				}
+			} else if err == nil || result.CreatedReplyID != 55 || result.Saved || result.Draft ||
 				!strings.Contains(err.Error(), test.want) {
-				t.Fatalf("unexpected reply result: %#v %v", result, err)
+				t.Fatalf("unexpected reply failure: %#v %v", result, err)
 			}
 		})
 	}
@@ -459,9 +488,11 @@ func TestDoneFailureReportsSubmissionWasNotAttempted(t *testing.T) {
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 		errors.New("Done failed"),
 	)
-	_, err := service.markDone("D1", []string{"20"}, true)
-	if err == nil || !strings.Contains(err.Error(), "submission was not attempted") {
-		t.Fatalf("unexpected error: %v", err)
+	result, err := service.markDone("D1", []string{"20"}, true)
+	if err == nil || result.Submission == nil ||
+		result.Submission.Outcome != submissionOutcomeNotAttempted ||
+		!strings.Contains(result.Submission.Recovery, "Done action failed") {
+		t.Fatalf("unexpected result: %#v %v", result, err)
 	}
 }
 

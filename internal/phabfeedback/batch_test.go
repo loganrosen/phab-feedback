@@ -243,9 +243,14 @@ func TestReplyDoneDoesNotMarkDoneWhenReplyFails(t *testing.T) {
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 		errors.New("reply failed"),
 	)
-	_, err := service.reply("D1", "20", "reply", true, true)
+	result, err := service.reply("D1", "20", "reply", true, true)
 	if err == nil {
 		t.Fatal("expected reply failure")
+	}
+	if result.Submission == nil ||
+		result.Submission.Outcome != submissionOutcomeNotAttempted ||
+		!strings.Contains(result.Submission.Recovery, "reply draft was not created") {
+		t.Fatalf("missing submission result: %#v", result)
 	}
 	for _, request := range transport.requests {
 		if request.form(t).Get("op") == "done" {
@@ -267,8 +272,10 @@ func TestReplyDoneFailureReportsDraftedReplyAndSkipsSubmit(t *testing.T) {
 	if err == nil || result.CreatedReplyID != 55 || !result.Draft {
 		t.Fatalf("unexpected partial result: %#v %v", result, err)
 	}
-	if !strings.Contains(err.Error(), "submission was not attempted") {
-		t.Fatalf("missing submission status: %v", err)
+	if result.Submission == nil ||
+		result.Submission.Outcome != submissionOutcomeNotAttempted ||
+		!strings.Contains(result.Submission.Recovery, "parent Done action failed") {
+		t.Fatalf("missing submission status: %#v %v", result, err)
 	}
 	for _, request := range transport.requests {
 		if strings.Contains(request.target, "/differential/revision/edit/1/comment/") {

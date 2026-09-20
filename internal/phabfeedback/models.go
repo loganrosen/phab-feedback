@@ -200,6 +200,15 @@ type submissionResult struct {
 	Recovery       string `json:"recovery,omitempty"`
 }
 
+const (
+	submissionOutcomeNotAttempted = "not-attempted"
+	submissionOutcomeBlocked      = "blocked"
+	submissionOutcomeUnknown      = "unknown"
+	submissionOutcomeNoEffect     = "no-effect"
+	submissionOutcomeRejected     = "rejected"
+	submissionOutcomeSubmitted    = "submitted"
+)
+
 type inlineReplyResult struct {
 	RevisionID        int               `json:"revision_id"`
 	Action            string            `json:"action"`
