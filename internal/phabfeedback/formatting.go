@@ -97,37 +97,39 @@ func renderInlineReply(result inlineReplyResult) string {
 	if replyID == 0 {
 		replyID = result.DraftCommentID
 	}
-	if replyID == 0 {
-		return decisionStyle("unresolved").Render(fmt.Sprintf(
+	lines := make([]string, 0, 3)
+	switch {
+	case replyID == 0:
+		lines = append(lines, decisionStyle("unresolved").Render(fmt.Sprintf(
 			"Could not confirm reply creation for comment #%d on D%d.",
 			result.ParentCommentID, result.RevisionID,
-		))
-	}
-	if !result.Saved && !result.Draft && !result.Published {
-		return decisionStyle("unresolved").Render(fmt.Sprintf(
+		)))
+	case !result.Saved && !result.Draft && !result.Published:
+		lines = append(lines, decisionStyle("unresolved").Render(fmt.Sprintf(
 			"Created inline reply #%d to comment #%d on D%d, but did not confirm its saved state.",
 			replyID, result.ParentCommentID, result.RevisionID,
-		))
-	}
-	state := "Drafted"
-	if result.Published {
-		state = "Published"
-	}
-	lines := []string{successStyle.Render(fmt.Sprintf(
-		"%s inline reply #%d to comment #%d on D%d.",
-		state, replyID, result.ParentCommentID, result.RevisionID,
-	))}
-	if result.Done != nil {
-		switch {
-		case result.Done.Recovery != "":
-			lines = append(lines, decisionStyle("unresolved").Render(fmt.Sprintf(
-				"Done action for comment #%d requires recovery: %s",
-				result.ParentCommentID, result.Done.Recovery,
-			)))
-		case boolPointerValue(result.Done.Draft):
-			lines = append(lines, successStyle.Render(fmt.Sprintf("Created a Done draft for comment #%d.", result.ParentCommentID)))
-		default:
-			lines = append(lines, successStyle.Render(fmt.Sprintf("Confirmed comment #%d Done.", result.ParentCommentID)))
+		)))
+	default:
+		state := "Drafted"
+		if result.Published {
+			state = "Published"
+		}
+		lines = append(lines, successStyle.Render(fmt.Sprintf(
+			"%s inline reply #%d to comment #%d on D%d.",
+			state, replyID, result.ParentCommentID, result.RevisionID,
+		)))
+		if result.Done != nil {
+			switch {
+			case result.Done.Recovery != "":
+				lines = append(lines, decisionStyle("unresolved").Render(fmt.Sprintf(
+					"Done action for comment #%d requires recovery: %s",
+					result.ParentCommentID, result.Done.Recovery,
+				)))
+			case boolPointerValue(result.Done.Draft):
+				lines = append(lines, successStyle.Render(fmt.Sprintf("Created a Done draft for comment #%d.", result.ParentCommentID)))
+			default:
+				lines = append(lines, successStyle.Render(fmt.Sprintf("Confirmed comment #%d Done.", result.ParentCommentID)))
+			}
 		}
 	}
 	if result.Submission != nil {
@@ -209,8 +211,6 @@ func renderSubmission(result submissionResult) string {
 		))
 	}
 	switch result.Outcome {
-	case submissionOutcomeNoEffect:
-		return detailStyle.Render(fmt.Sprintf("No publishable drafts were found on D%d.", result.RevisionID))
 	case submissionOutcomeNotAttempted:
 		return detailStyle.Render(fmt.Sprintf(
 			"Submission was not attempted on D%d: %s", result.RevisionID, result.Recovery,
@@ -228,6 +228,11 @@ func renderSubmission(result submissionResult) string {
 			"Submission was rejected on D%d: %s", result.RevisionID, detail,
 		))
 	default:
+		if result.Recovery == "" {
+			return decisionStyle("unresolved").Render(fmt.Sprintf(
+				"Submission outcome is unknown on D%d.", result.RevisionID,
+			))
+		}
 		return decisionStyle("unresolved").Render(fmt.Sprintf(
 			"Submission outcome is unknown on D%d: %s", result.RevisionID, result.Recovery,
 		))
@@ -478,10 +483,14 @@ func renderBatch(result batchResult) string {
 			return decisionStyle("unresolved").Render(fmt.Sprintf("Batch stopped after an unreported failure on D%d.", result.RevisionID))
 		}
 		if result.Failure.Action == "submit" {
-			return decisionStyle("unresolved").Render(fmt.Sprintf(
+			lines := []string{decisionStyle("unresolved").Render(fmt.Sprintf(
 				"Batch submission stopped after %d completed mutations on D%d.",
 				result.Failure.CompletedMutations, result.RevisionID,
-			))
+			))}
+			if result.Submission != nil {
+				lines = append(lines, renderSubmission(*result.Submission))
+			}
+			return strings.Join(lines, "\n")
 		}
 		return decisionStyle("unresolved").Render(fmt.Sprintf(
 			"Batch stopped at manifest action %d, mutation %d (%s), after %d completed mutations on D%d.",

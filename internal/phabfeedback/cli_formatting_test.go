@@ -300,11 +300,6 @@ func TestSubmissionTextDistinguishesOutcomes(t *testing.T) {
 		want   string
 	}{
 		{
-			name:   "server no effect",
-			result: submissionResult{RevisionID: 12, Outcome: submissionOutcomeNoEffect, Attempted: true},
-			want:   "No publishable drafts were found on D12.",
-		},
-		{
 			name: "not attempted",
 			result: submissionResult{
 				RevisionID: 12, Outcome: submissionOutcomeNotAttempted,
@@ -328,6 +323,11 @@ func TestSubmissionTextDistinguishesOutcomes(t *testing.T) {
 			},
 			want: "Submission was rejected on D12: An inline comment is still being edited.",
 		},
+		{
+			name:   "unknown without detail",
+			result: submissionResult{RevisionID: 12, Outcome: submissionOutcomeUnknown},
+			want:   "Submission outcome is unknown on D12.",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -339,6 +339,58 @@ func TestSubmissionTextDistinguishesOutcomes(t *testing.T) {
 				t.Fatalf("text output = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestReplyFailureTextIncludesSubmissionStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		result inlineReplyResult
+		want   string
+	}{
+		{
+			name: "creation unconfirmed",
+			result: inlineReplyResult{
+				RevisionID: 12, ParentCommentID: 34,
+				Submission: unattemptedSubmission(12, "The reply draft was not created successfully."),
+			},
+			want: "Could not confirm reply creation for comment #34 on D12.\n" +
+				"Submission was not attempted on D12: The reply draft was not created successfully.",
+		},
+		{
+			name: "save unconfirmed",
+			result: inlineReplyResult{
+				RevisionID: 12, ParentCommentID: 34, CreatedReplyID: 56,
+				Submission: unattemptedSubmission(12, "The reply draft was not created successfully."),
+			},
+			want: "Created inline reply #56 to comment #34 on D12, but did not confirm its saved state.\n" +
+				"Submission was not attempted on D12: The reply draft was not created successfully.",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := ansi.Strip(renderInlineReply(test.result))
+			if got != test.want {
+				t.Fatalf("text output = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestBatchSubmissionFailureTextIncludesOutcome(t *testing.T) {
+	got := ansi.Strip(renderBatch(batchResult{
+		RevisionID: 12,
+		State:      "partial",
+		Failure:    &batchFailure{Action: "submit", CompletedMutations: 2},
+		Submission: &submissionResult{
+			RevisionID: 12, Outcome: submissionOutcomeRejected,
+			Dialog: "An inline comment is still being edited.",
+		},
+	}))
+	want := "Batch submission stopped after 2 completed mutations on D12.\n" +
+		"Submission was rejected on D12: An inline comment is still being edited."
+	if got != want {
+		t.Fatalf("text output = %q, want %q", got, want)
 	}
 }
 

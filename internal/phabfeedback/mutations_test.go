@@ -57,8 +57,7 @@ func TestSubmitRequiresRedirectConfirmation(t *testing.T) {
 		{
 			name: "dialog",
 			payload: map[string]any{
-				"dialog": `<div class="aphront-dialog-head">Unsaved Inline</div>
-					<div>An inline comment is still being edited.</div>`,
+				"dialog": "An inline comment is still being edited.",
 			},
 			wantOutcome: "rejected",
 			wantError:   "unsaved inline comment",
@@ -83,14 +82,11 @@ func TestSubmitRequiresRedirectConfirmation(t *testing.T) {
 				!strings.Contains(err.Error(), test.wantError) {
 				t.Fatalf("unexpected submission result: %#v %v", result, err)
 			}
-			if strings.ContainsAny(result.Dialog, "<>") {
-				t.Fatalf("dialog markup was not removed: %q", result.Dialog)
-			}
 		})
 	}
 }
 
-func TestSubmitTreatsEmptyCommentDialogAsNoEffect(t *testing.T) {
+func TestSubmitTreatsEmptyCommentDialogAsRejection(t *testing.T) {
 	service, _ := serviceWith(
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 		response(map[string]any{"payload": map[string]any{
@@ -99,24 +95,9 @@ func TestSubmitTreatsEmptyCommentDialogAsNoEffect(t *testing.T) {
 		}}),
 	)
 	result, err := service.submit("D1")
-	if err != nil || !result.Attempted || result.Submitted || result.Outcome != "no-effect" ||
+	if err == nil || !result.Attempted || result.Submitted ||
+		result.Outcome != submissionOutcomeRejected ||
 		!strings.Contains(result.Dialog, "Empty Comment") {
-		t.Fatalf("unexpected submission result: %#v %v", result, err)
-	}
-}
-
-func TestSubmitClassifiesOnlyEmptyCommentTitleAsNoEffect(t *testing.T) {
-	service, _ := serviceWith(
-		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
-		response(map[string]any{"payload": map[string]any{
-			"dialog": `<div class="aphront-dialog-head">1 Action(s) With No Effect</div>
-				<div>You can not post an empty comment.</div>
-				<button>Apply Remaining Actions</button>`,
-		}}),
-	)
-	result, err := service.submit("D1")
-	if err == nil || result.Outcome != submissionOutcomeRejected ||
-		!strings.Contains(result.Dialog, "Apply Remaining Actions") {
 		t.Fatalf("unexpected submission result: %#v %v", result, err)
 	}
 }
@@ -137,7 +118,7 @@ func TestSubmitRejectsActionsWithNoEffectConfirmation(t *testing.T) {
 	}
 }
 
-func TestSubmitReportsCSRFFailureAsNotAttempted(t *testing.T) {
+func TestSubmitReportsCSRFFailureAsBlocked(t *testing.T) {
 	service, _ := serviceWith(errors.New("csrf failed"))
 	result, err := service.submit("D1")
 	if err == nil || result.Attempted || result.Submitted || result.Outcome != submissionOutcomeBlocked ||
@@ -146,17 +127,12 @@ func TestSubmitReportsCSRFFailureAsNotAttempted(t *testing.T) {
 	}
 }
 
-func TestDialogSummaryProducesBoundedPlainText(t *testing.T) {
-	dialog := `<div class="aphront-dialog-head">Warning &amp; Details</div><p>` +
-		`Escaped &lt;script&gt; and literal 5 < 3 still has trailing guidance. ` +
-		strings.Repeat("x", 600) + `</p>`
-	result := parseDialog(dialog)
-	if result.Title != "Warning & Details" ||
-		strings.ContainsAny(result.Text, "<>") ||
-		!strings.Contains(result.Text, `Escaped \x3cscript\x3e`) ||
-		!strings.Contains(result.Text, `literal 5 \x3c 3 still has trailing guidance`) ||
-		len([]rune(result.Text)) > 500 || !strings.HasSuffix(result.Text, "...") {
-		t.Fatalf("unexpected dialog summary: %#v", result)
+func TestDialogTextIsBoundedAndControlSafe(t *testing.T) {
+	dialog := "<div>Warning\nDetails\x01</div>" + strings.Repeat("x", 600)
+	result := boundedDialogText(dialog)
+	if !strings.Contains(result, `<div>Warning\nDetails\x01</div>`) ||
+		len([]rune(result)) > 500 || !strings.HasSuffix(result, "...") {
+		t.Fatalf("unexpected dialog text: %q", result)
 	}
 }
 

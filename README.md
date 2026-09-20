@@ -240,26 +240,26 @@ every `--submit` form publish all eligible pending inline drafts owned by that
 user on the revision, including drafts created earlier in the browser or by
 another command. Inspect existing drafts before approving publication.
 The CLI only reports publication when Phabricator returns its success redirect.
-An upstream `Empty Comment` dialog means there was nothing to publish and is
-reported as `outcome: "no-effect"`. All other server dialogs and warnings,
-including `Action(s) With No Effect` confirmations, are surfaced as failures and
-are never automatically overridden. If submission reports an inline still
-being edited, save or close that editor in Phabricator and retry after reviewing
-every pending draft. A `done --submit` or batch submission is not attempted
-when every target was already published Done and the command created no new
-drafts; use the standalone `submit` command if existing unrelated drafts should
-still be published.
+Every server dialog or warning, including `Empty Comment` and
+`Action(s) With No Effect`, is surfaced as a rejection and is never
+automatically overridden. If submission reports an inline still being edited,
+save or close that editor in Phabricator and retry after reviewing every
+pending draft. A `done --submit` or batch submission is not attempted when
+every target was already published Done and the command created no new drafts;
+use the standalone `submit` command if existing unrelated drafts should still
+be published.
 
 Mutation JSON includes the revision and action plus operation-specific fields
 such as `created_reply_id`, `parent_comment_id`, `draft`, `published`, and
 `final_done`. Submission results include `outcome`, `attempted`, `submitted`,
-and, when applicable, a bounded plain-text `dialog`, `outcome_unknown`, or
-`recovery`. `outcome: "not-attempted"` identifies a deliberate workflow skip,
-while `outcome: "blocked"` identifies a pre-request failure such as an
-unavailable CSRF token. Both have `attempted: false`; the server-confirmed
-`no-effect` outcome has `attempted: true`. Batch dry-run entries instead use
-`planned: true`; they do not claim draft, publication, or final Done state
-before mutation.
+and, when applicable, a bounded, control-safe `dialog`, `outcome_unknown`, or
+`recovery`. `outcome: "not-attempted"` means the workflow never reached
+submission, either because no new draft needed publication or because an
+earlier reply or Done operation failed. `outcome: "blocked"` identifies a
+submission prerequisite failure such as an unavailable CSRF token. Both have
+`attempted: false`; use the command exit status and `recovery` to distinguish
+benign skips from failures. Batch dry-run entries instead use `planned: true`;
+they do not claim draft, publication, or final Done state before mutation.
 If a Done retry fails, `observed_checked` and `observed_draft_state` describe
 only the last confirmed response; normal result fields remain absent because
 the final remote outcome is unknown. Multi-target Done failures list later

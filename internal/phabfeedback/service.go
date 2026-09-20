@@ -3,9 +3,7 @@ package phabfeedback
 import (
 	"errors"
 	"fmt"
-	"html"
 	"maps"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -493,7 +491,7 @@ func (s *feedbackService) draftInlineReplyValidated(revisionID int, parent valid
 	savedInline, inlineOK := mapValue(savedPayload["inline"])
 	savedID, idOK := intValue(savedInline["id"])
 	if !ok || !inlineOK || !idOK || savedID != replyID {
-		dialog := parseDialog(savedPayload["dialog"]).Text
+		dialog := boundedDialogText(savedPayload["dialog"])
 		detail := "the save response did not include a rendered inline"
 		if dialog != "" {
 			detail = "Phabricator returned a dialog: " + dialog
@@ -532,10 +530,10 @@ func (s *feedbackService) reply(revision, parent, message string, done, submit b
 			)
 		}
 		if done {
-			return result, &mutationResultError{
-				result: result,
-				err:    fmt.Errorf("%w; parent Done action was not attempted", err),
-			}
+			err = fmt.Errorf("%w; parent Done action was not attempted", err)
+		}
+		if submit || done {
+			return result, &mutationResultError{result: result, err: err}
 		}
 		return result, err
 	}
@@ -883,13 +881,7 @@ func (s *feedbackService) submit(revision string) (submissionResult, error) {
 	}
 	redirect := strings.TrimSpace(stringValue(payload["redirect"]))
 	if redirect == "" {
-		dialog := parseDialog(payload["dialog"])
-		result.Dialog = dialog.Text
-		if isEmptyCommentDialog(dialog.Title) {
-			result.Outcome = submissionOutcomeNoEffect
-			result.Recovery = "No publishable drafts were found."
-			return result, nil
-		}
+		result.Dialog = boundedDialogText(payload["dialog"])
 		if result.Dialog == "" {
 			result.OutcomeUnknown = true
 			result.Recovery = "The submission response contained no redirect. Inspect the revision before retrying."
@@ -918,111 +910,12 @@ func unattemptedSubmission(revisionID int, recovery string) *submissionResult {
 	}
 }
 
-type dialogSummary struct {
-	Title string
-	Text  string
-}
-
-func isEmptyCommentDialog(title string) bool {
-	return strings.EqualFold(strings.TrimSpace(title), "Empty Comment")
-}
-
-func parseDialog(value any) dialogSummary {
-	raw := strings.TrimSpace(stringValue(value))
-	if raw == "" {
-		return dialogSummary{}
-	}
-	var text, title strings.Builder
-	titleTag := ""
-	for position := 0; position < len(raw); {
-		if raw[position] != '<' || !htmlTagStart(raw, position+1) {
-			text.WriteByte(raw[position])
-			if titleTag != "" {
-				title.WriteByte(raw[position])
-			}
-			position++
-			continue
-		}
-		end := strings.IndexByte(raw[position+1:], '>')
-		if end < 0 {
-			text.WriteByte(raw[position])
-			if titleTag != "" {
-				title.WriteByte(raw[position])
-			}
-			position++
-			continue
-		}
-		end += position + 1
-		tag := strings.TrimSpace(raw[position+1 : end])
-		name, closing := htmlTagName(tag)
-		if closing && name == titleTag {
-			titleTag = ""
-		} else if !closing && hasHTMLClass(tag, "aphront-dialog-head") {
-			titleTag = name
-		}
-		text.WriteByte(' ')
-		if titleTag != "" {
-			title.WriteByte(' ')
-		}
-		position = end + 1
-	}
-	return dialogSummary{
-		Title: plainDialogText(title.String(), 200),
-		Text:  plainDialogText(text.String(), 500),
-	}
-}
-
-func htmlTagStart(value string, position int) bool {
-	if position >= len(value) {
-		return false
-	}
-	character := value[position]
-	return character == '/' || character == '!' || character == '?' ||
-		(character >= 'A' && character <= 'Z') ||
-		(character >= 'a' && character <= 'z')
-}
-
-func htmlTagName(tag string) (string, bool) {
-	closing := strings.HasPrefix(tag, "/")
-	tag = strings.TrimLeft(tag, "/!? ")
-	end := strings.IndexAny(tag, " \t\r\n/>")
-	if end >= 0 {
-		tag = tag[:end]
-	}
-	return strings.ToLower(tag), closing
-}
-
-func hasHTMLClass(tag, className string) bool {
-	lower := strings.ToLower(tag)
-	for _, quote := range []byte{'"', '\''} {
-		marker := "class=" + string(quote)
-		start := strings.Index(lower, marker)
-		if start < 0 {
-			continue
-		}
-		start += len(marker)
-		end := strings.IndexByte(lower[start:], quote)
-		if end < 0 {
-			continue
-		}
-		if slices.Contains(strings.Fields(lower[start:start+end]), className) {
-			return true
-		}
-	}
-	return false
-}
-
-func plainDialogText(value string, limit int) string {
-	summary := strings.Join(strings.Fields(html.UnescapeString(value)), " ")
-	summary = strings.NewReplacer("<", `\x3c`, ">", `\x3e`).Replace(summary)
-	summary = safe(summary)
+func boundedDialogText(value any) string {
+	summary := safe(strings.TrimSpace(stringValue(value)))
 	const maxDialogRunes = 500
 	runes := []rune(summary)
-	if limit <= 0 {
-		limit = maxDialogRunes
-	}
-	if len(runes) > limit {
-		summary = string(runes[:limit-3]) + "..."
+	if len(runes) > maxDialogRunes {
+		summary = string(runes[:maxDialogRunes-3]) + "..."
 	}
 	return summary
 }

@@ -204,7 +204,6 @@ const (
 	submissionOutcomeNotAttempted = "not-attempted"
 	submissionOutcomeBlocked      = "blocked"
 	submissionOutcomeUnknown      = "unknown"
-	submissionOutcomeNoEffect     = "no-effect"
 	submissionOutcomeRejected     = "rejected"
 	submissionOutcomeSubmitted    = "submitted"
 )

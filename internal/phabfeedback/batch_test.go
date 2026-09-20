@@ -259,6 +259,28 @@ func TestReplyDoneDoesNotMarkDoneWhenReplyFails(t *testing.T) {
 	}
 }
 
+func TestReplySubmitFailureEmbedsUpdatedStructuredResult(t *testing.T) {
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	service, _ := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		errors.New("reply failed"),
+	)
+	result, err := service.reply("D1", "20", "reply", false, true)
+	if err == nil || result.Submission == nil {
+		t.Fatalf("unexpected result: %#v %v", result, err)
+	}
+	var resultError interface{ commandResult() any }
+	if !errors.As(err, &resultError) {
+		t.Fatalf("error does not contain a command result: %v", err)
+	}
+	reported, ok := resultError.commandResult().(inlineReplyResult)
+	if !ok || reported.Submission == nil ||
+		reported.Submission.Outcome != submissionOutcomeNotAttempted {
+		t.Fatalf("stale command result: %#v", resultError.commandResult())
+	}
+}
+
 func TestReplyDoneFailureReportsDraftedReplyAndSkipsSubmit(t *testing.T) {
 	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
 	service, transport := serviceWith(
