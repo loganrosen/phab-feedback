@@ -249,7 +249,7 @@ func TestBatchAcceptedSubmissionPublishesRepliesBeforeDoneVerificationFailure(t 
 			}
 			doneMutation := result.Mutations[1]
 			if doneMutation.Action != "done" || doneMutation.Published != nil ||
-				doneMutation.Draft != nil || boolPointerValue(doneMutation.FinalDone) != boolPointerValue(test.wantFinalDone) {
+				doneMutation.Draft != nil || !sameBoolPointerValue(doneMutation.FinalDone, test.wantFinalDone) {
 				t.Fatalf("unexpected Done result after verification failure: %#v", doneMutation)
 			}
 		})
