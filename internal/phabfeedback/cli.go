@@ -58,7 +58,7 @@ func newRootCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) *c
 	root := &cobra.Command{
 		Use:   "phab-feedback",
 		Short: "Manage Phabricator and Phorge review feedback",
-		Long:  "List review work, or pass a revision first to inspect and respond to it.",
+		Long:  "List review work, or pass a revision first to inspect and respond to it.\nUse D123 --help for revision commands, or skill show for the bundled agent workflow.",
 		Example: strings.Join([]string{
 			"  phab-feedback",
 			"  phab-feedback list --role reviewing",
@@ -90,6 +90,7 @@ func newRootCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) *c
 	root.AddCommand(newListCommand(options))
 	root.AddCommand(newDoctorCommand(options))
 	root.AddCommand(newBatchCommand(options))
+	root.AddCommand(newSkillCommand(options))
 	if revision := revisionArgument(root, args); revision != "" {
 		root.AddCommand(newRevisionGroup(options, revision))
 	}
@@ -385,8 +386,13 @@ func newReplyCommand(app *appOptions, revision string) *cobra.Command {
 	message := messageOptions{}
 	var done, submit bool
 	command := &cobra.Command{
-		Use:     "reply COMMENT_ID",
-		Short:   "Draft a true reply to an inline comment",
+		Use:   "reply COMMENT_ID",
+		Short: "Draft a true reply to an inline comment",
+		Long: "Create an inline reply draft using the exact comment id from --threads or --timeline.\n" +
+			"Obtain separate approval for reply text, optional Done, and publication.\n" +
+			"Without --submit nothing is published. --submit publishes all eligible pending\n" +
+			"drafts you own on this revision, including unrelated browser drafts. Every server\n" +
+			"dialog blocks publication; warnings are never overridden.",
 		GroupID: "respond",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
@@ -407,8 +413,11 @@ func newReplyCommand(app *appOptions, revision string) *cobra.Command {
 
 func newRemoveCommentCommand(app *appOptions, revision string) *cobra.Command {
 	return &cobra.Command{
-		Use:     "remove-comment COMMENT_ID",
-		Short:   "Remove an accidental top-level comment",
+		Use:   "remove-comment COMMENT_ID",
+		Short: "Remove an accidental top-level comment",
+		Long: "Immediately remove an accidental top-level comment after validating its type.\n" +
+			"Use the exact comment id from the timeline and obtain approval for removal;\n" +
+			"this is not a draft action and cannot remove inline comments.",
 		GroupID: "respond",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
@@ -422,8 +431,14 @@ func newRemoveCommentCommand(app *appOptions, revision string) *cobra.Command {
 func newDoneCommand(app *appOptions, revision string) *cobra.Command {
 	var submit bool
 	command := &cobra.Command{
-		Use:     "done COMMENT_ID...",
-		Short:   "Mark inline comments Done as drafts",
+		Use:   "done COMMENT_ID...",
+		Short: "Mark inline comments Done as drafts",
+		Long: "Create Done drafts using exact comment ids from --threads or --timeline.\n" +
+			"Draft creation and publication require separate approval. --submit publishes\n" +
+			"all eligible pending drafts you own, including unrelated drafts, unless every\n" +
+			"target was already published Done and no new draft was created.\n" +
+			"If interrupted, inspect the comment and rerun done before any later submission:\n" +
+			"an upstream toggle may have left a pending undo-Done draft.",
 		GroupID: "respond",
 		Args:    cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
@@ -441,14 +456,23 @@ func newSubmitCommand(app *appOptions, revision string) *cobra.Command {
 		return service.submit(revision)
 	})
 	command.GroupID = "respond"
+	command.Long = "Publish every pending draft you own that is eligible on this revision, including\n" +
+		"unrelated drafts created earlier in the browser or by another command. Inspect\n" +
+		"pending drafts and obtain publication approval separately from draft creation.\n" +
+		"Every server dialog, including Empty Comment and Action(s) With No Effect,\n" +
+		"blocks publication. Save or close any active inline editor, re-inspect drafts,\n" +
+		"and approve a retry; never override warnings."
 	return command
 }
 
 func newVerifyCommand(app *appOptions, revision string) *cobra.Command {
 	var replyValues, doneValues []string
 	command := &cobra.Command{
-		Use:     "verify",
-		Short:   "Verify reply linkage and visible Conduit Done states",
+		Use:   "verify",
+		Short: "Verify reply linkage and visible Conduit Done states",
+		Long: "Check visible reply ids and direct-parent linkage, not independent publication proof.\n" +
+			"Conduit isDone=true represents both published Done and pending undo-Done.\n" +
+			"An observed Done result is a visible-state check, not definitive publication proof.",
 		GroupID: "respond",
 		Args:    cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
@@ -478,7 +502,15 @@ func newBatchCommand(app *appOptions) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "batch MANIFEST",
 		Short: "Validate and execute ordered reply and Done actions from JSON",
-		Args:  cobra.ExactArgs(1),
+		Long: "Validate every manifest action and target before creating reply and Done drafts\n" +
+			"in order. --dry-run makes no mutations. Draft creation and publication require\n" +
+			"separate approval. --submit submits at most once and publishes all eligible pending\n" +
+			"drafts you own on the revision, including drafts outside the manifest.\n" +
+			"Remote partial failures may leave earlier drafts; inspect recovery and exit status\n" +
+			"before retrying. No submission follows a failed draft operation. Server dialogs\n" +
+			"block publication and are never overridden. All-already-Done batches with no new\n" +
+			"draft skip submission rather than publishing unrelated drafts.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			manifest, err := readBatchManifest(args[0])
 			if err != nil {
@@ -497,8 +529,11 @@ func newBatchCommand(app *appOptions) *cobra.Command {
 func newRateCommand(app *appOptions, revision string) *cobra.Command {
 	var helpful, unhelpful bool
 	command := &cobra.Command{
-		Use:     "rate COMMENT_ID...",
-		Short:   "Rate Review Helper feedback (Mozilla only)",
+		Use:   "rate COMMENT_ID...",
+		Short: "Rate Review Helper feedback (Mozilla only)",
+		Long: "Send helpful or unhelpful ratings immediately through Mozilla Review Helper.\n" +
+			"Use exact comment ids from the timeline and obtain approval for the rating;\n" +
+			"this is not a draft action and does not publish other pending drafts.",
 		GroupID: "mozilla",
 		Args:    cobra.MinimumNArgs(1),
 		PreRunE: func(_ *cobra.Command, _ []string) error {
@@ -527,6 +562,9 @@ func newAIReviewCommand(app *appOptions, revision string) *cobra.Command {
 		return service.requestAIReview(revision)
 	})
 	command.GroupID = "mozilla"
+	command.Long = "Immediately request an AI review through Mozilla Review Helper, not as a draft.\n" +
+		"Request approval only after the relevant changes are published and the user\n" +
+		"has selected the AI reviewer. This does not submit pending inline drafts."
 	return command
 }
 

@@ -28,6 +28,7 @@ or install from source with Go 1.27.1 or newer:
 ```bash
 go install github.com/loganrosen/phab-feedback/cmd/phab-feedback@latest
 phab-feedback --help
+phab-feedback skill show
 ```
 
 To run the latest version without installing an executable:
@@ -93,6 +94,7 @@ Credential requirements vary by command:
 
 | Actions | Conduit token | Web session |
 | --- | --- | --- |
+| `--help`, `skill show`, `skill install` | No | No |
 | Queue listing, revision overview, `--threads`, `--timeline`, `comment` | Required | No |
 | `reply`, `remove-comment`, `done`, `batch` mutations | Required | Required |
 | `batch --dry-run` | Required | No |
@@ -116,8 +118,9 @@ config file.
 
 ## Commands and draft behavior
 
-Successful commands write compact, human-readable text to stdout. Every command
-supports `--format json` for agents, scripts, and other structured consumers.
+Successful commands write compact, human-readable text to stdout. `skill show`
+prints unstyled Markdown instead. Every command supports `--format json` for
+agents, scripts, and other structured consumers.
 Interactive terminals use color and emphasis for IDs, statuses, and metadata.
 Styling is removed when output is redirected, and color can be disabled with
 `NO_COLOR`.
@@ -361,16 +364,58 @@ Done, or submission actions.
 
 ## Optional agent skill
 
-The agent skill and CLI install separately. The skill provides workflow
-and approval guidance; it does not install the package or reimplement the CLI.
-Install the skill with:
+The complete agent workflow guide ships inside the CLI binary, matched to that
+release. Read it offline without credentials or neighboring files:
+
+```bash
+phab-feedback skill show
+```
+
+`--format json` returns an object with a `markdown` field. The guide covers exact
+comment IDs, separate mutation approvals, revision-wide publication, blocked
+dialogs, batch recovery, interrupted Done actions, and verification limitations.
+
+The optional skill is a small discovery stub: it tells agents to read
+`phab-feedback skill show` before working. Explicitly install it with:
+
+```bash
+phab-feedback skill install
+```
+
+The default destination is `~/.agents/skills/phab-feedback/SKILL.md`, one of
+[Copilot CLI's documented personal skill locations](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills).
+Copilot also supports `~/.copilot/skills`; other agents have their own discovery
+paths. To use another location, pass the skill directory, not the file:
+
+```bash
+phab-feedback skill install --dir ~/.copilot/skills/phab-feedback
+```
+
+Installation needs no credentials or network access and does not change agent
+configuration. Identical content is left untouched. Differing content, including
+an older full skill or local customization, fails with a clear conflict; review
+it before explicitly replacing it with `--force`. Symlink and non-regular
+`SKILL.md` files are rejected even with `--force`. Installation JSON reports the
+absolute `path` and whether it `changed`. Reload skills in the agent after
+installation.
+
+The same stub remains discoverable with the skills installer:
 
 ```bash
 npx skills add loganrosen/phab-feedback@phab-feedback -g
 ```
 
-At runtime the skill uses an installed `phab-feedback` command when available,
-or `go run` as a non-persistent fallback.
+The stub uses an installed `phab-feedback` command when available, or `go run`
+as a non-persistent fallback for both the guide and subsequent commands.
+Updating the CLI updates its embedded guide; the discovery stub normally needs
+no update. Update a downloaded binary from the latest release, or rerun
+`go install github.com/loganrosen/phab-feedback/cmd/phab-feedback@latest`.
+Ordinary CLI invocation never silently installs or updates skills.
+
+No skill is required to use the CLI. `phab-feedback --help` discovers commands,
+`phab-feedback D123 --help` discovers revision actions, and each action's
+`--help` explains relevant draft, publication, recovery, or verification
+semantics. `skill show` also works without installing the discovery stub.
 
 ## Troubleshooting
 
