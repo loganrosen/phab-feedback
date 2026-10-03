@@ -160,6 +160,9 @@ func TestBatchDraftsInOrderAndSubmitsOnce(t *testing.T) {
 		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
 		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
 		response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
+		conduitResult(map[string]any{"data": []any{
+			transaction(2, "inline", 20, map[string]any{"isDone": true}),
+		}, "cursor": map[string]any{"after": nil}}),
 	)
 	result, err := service.batch(batchManifest{
 		Revision: "D1",
@@ -170,7 +173,12 @@ func TestBatchDraftsInOrderAndSubmitsOnce(t *testing.T) {
 	}
 	if result.State != "published" || result.Submission == nil || !result.Submission.Attempted ||
 		len(result.Mutations) != 2 || result.Mutations[0].Action != "reply" ||
-		result.Mutations[1].Action != "done" {
+		result.Mutations[1].Action != "done" ||
+		result.Submission.DoneVerification == nil ||
+		result.Submission.DoneVerification.Status != "observed" ||
+		!result.Submission.DoneVerification.DoneStateAmbiguous ||
+		result.Mutations[1].Published != nil ||
+		!boolPointerValue(result.Mutations[1].FinalDone) {
 		t.Fatalf("unexpected batch result: %#v", result)
 	}
 	if transport.requests[2].form(t).Get("op") != "reply" ||
@@ -315,13 +323,19 @@ func TestReplyDoneSubmitsAfterBothDrafts(t *testing.T) {
 		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
 		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
 		response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
+		conduitResult(map[string]any{"data": []any{
+			transaction(2, "inline", 20, map[string]any{"isDone": true}),
+		}, "cursor": map[string]any{"after": nil}}),
 	)
 	result, err := service.reply("D1", "20", "reply", true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Action != "reply+done" || !result.Published || result.Draft || result.Done == nil ||
-		!boolPointerValue(result.Done.Published) || result.Submission == nil {
+		result.Done.Published != nil || !boolPointerValue(result.Done.FinalDone) ||
+		result.Submission == nil || result.Submission.DoneVerification == nil ||
+		result.Submission.DoneVerification.Status != "observed" ||
+		!result.Submission.DoneVerification.DoneStateAmbiguous {
 		t.Fatalf("unexpected reply+Done result: %#v", result)
 	}
 	if transport.requests[2].form(t).Get("op") != "reply" ||
@@ -339,13 +353,20 @@ func TestDoneSubmitPublishesOnce(t *testing.T) {
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
 		response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
+		conduitResult(map[string]any{"data": []any{
+			transaction(2, "inline", 20, map[string]any{"isDone": true}),
+		}, "cursor": map[string]any{"after": nil}}),
 	)
 	result, err := service.markDone("D1", []string{"20"}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Submission == nil || !result.Submission.Attempted || !result.Submission.Submitted ||
-		boolPointerValue(result.Comments[0].Draft) || !boolPointerValue(result.Comments[0].Published) {
+		result.Submission.DoneVerification == nil ||
+		result.Submission.DoneVerification.Status != "observed" ||
+		!result.Submission.DoneVerification.DoneStateAmbiguous ||
+		result.Comments[0].Draft != nil || result.Comments[0].Published != nil ||
+		!boolPointerValue(result.Comments[0].FinalDone) {
 		t.Fatalf("unexpected Done result: %#v", result)
 	}
 	submits := 0
@@ -356,6 +377,48 @@ func TestDoneSubmitPublishesOnce(t *testing.T) {
 	}
 	if submits != 1 {
 		t.Fatalf("submission count = %d, want 1", submits)
+	}
+}
+
+func TestDoneSubmitRejectsRedirectWhenTargetRemainsUnresolved(t *testing.T) {
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	service, _ := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
+		response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
+		conduitResult(map[string]any{"data": []any{
+			transaction(2, "inline", 20, map[string]any{"isDone": false}),
+		}, "cursor": map[string]any{"after": nil}}),
+	)
+	result, err := service.markDone("D1", []string{"20"}, true)
+	if err == nil || !strings.Contains(err.Error(), "Done state is not visible for #20") ||
+		result.Submission == nil || !result.Submission.Submitted ||
+		result.Submission.DoneVerification == nil ||
+		result.Submission.DoneVerification.Status != "failed" ||
+		boolPointerValue(result.Comments[0].FinalDone) ||
+		result.Comments[0].Published != nil {
+		t.Fatalf("unexpected result: %#v %v", result, err)
+	}
+}
+
+func TestDoneSubmitReportsVerificationFailureAfterAcceptedSubmission(t *testing.T) {
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	service, _ := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
+		response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
+		errors.New("Conduit unavailable"),
+	)
+	result, err := service.markDone("D1", []string{"20"}, true)
+	if err == nil || !strings.Contains(err.Error(), "Done outcome verification failed") ||
+		result.Submission == nil || !result.Submission.Submitted ||
+		result.Submission.DoneVerification != nil ||
+		result.Submission.DoneVerificationNote == "" ||
+		result.Comments[0].FinalDone != nil ||
+		result.Comments[0].Published != nil {
+		t.Fatalf("unexpected result: %#v %v", result, err)
 	}
 }
 

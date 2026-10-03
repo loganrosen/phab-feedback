@@ -119,16 +119,17 @@ func renderInlineReply(result inlineReplyResult) string {
 			state, replyID, result.ParentCommentID, result.RevisionID,
 		)))
 		if result.Done != nil {
-			switch {
-			case result.Done.Recovery != "":
+			if result.Done.Recovery != "" {
 				lines = append(lines, decisionStyle("unresolved").Render(fmt.Sprintf(
 					"Done action for comment #%d requires recovery: %s",
 					result.ParentCommentID, result.Done.Recovery,
 				)))
-			case boolPointerValue(result.Done.Draft):
-				lines = append(lines, successStyle.Render(fmt.Sprintf("Created a Done draft for comment #%d.", result.ParentCommentID)))
-			default:
-				lines = append(lines, successStyle.Render(fmt.Sprintf("Confirmed comment #%d Done.", result.ParentCommentID)))
+			} else if !submissionHasDoneOutcome(result.Submission) {
+				if boolPointerValue(result.Done.Draft) {
+					lines = append(lines, successStyle.Render(fmt.Sprintf("Created a Done draft for comment #%d.", result.ParentCommentID)))
+				} else {
+					lines = append(lines, successStyle.Render(fmt.Sprintf("Confirmed comment #%d Done.", result.ParentCommentID)))
+				}
 			}
 		}
 	}
@@ -146,12 +147,16 @@ func renderDone(result commentActionResult) string {
 	published := make([]string, 0, len(result.Comments))
 	confirmed := make([]string, 0, len(result.Comments))
 	recovery := make([]string, 0)
+	doneVerificationPending := submissionHasDoneOutcome(result.Submission)
 	for _, comment := range result.Comments {
 		if comment.Recovery != "" {
 			recovery = append(recovery, decisionStyle("unresolved").Render(fmt.Sprintf(
 				"Done action for comment #%d on D%d requires recovery: %s",
 				comment.CommentID, result.RevisionID, comment.Recovery,
 			)))
+			continue
+		}
+		if doneVerificationPending {
 			continue
 		}
 		identifier := fmt.Sprintf("#%d", comment.CommentID)
@@ -206,9 +211,41 @@ func renderCommentAction(result commentActionResult, verb, outcome string) strin
 
 func renderSubmission(result submissionResult) string {
 	if result.Submitted {
-		return successStyle.Render(fmt.Sprintf(
-			"Submitted every pending draft you own on D%d.", result.RevisionID,
-		))
+		message := fmt.Sprintf("Submitted every pending draft you own on D%d.", result.RevisionID)
+		if result.DoneVerification != nil || result.DoneVerificationNote != "" {
+			message = fmt.Sprintf("Phabricator accepted the submission request on D%d.", result.RevisionID)
+		}
+		lines := []string{successStyle.Render(message)}
+		if result.DoneVerification != nil {
+			if result.DoneVerification.ChecksPassed {
+				ids := make([]string, 0, len(result.DoneVerification.Done))
+				for _, done := range result.DoneVerification.Done {
+					ids = append(ids, fmt.Sprintf("#%d", done.CommentID))
+				}
+				lines = append(lines, decisionStyle("unresolved").Render(fmt.Sprintf(
+					"Done state observed for %s on D%d, but Conduit cannot confirm it is published rather than a pending undo-Done draft.",
+					strings.Join(ids, ", "), result.RevisionID,
+				)))
+			} else {
+				unresolved := make([]string, 0, len(result.DoneVerification.Done))
+				for _, done := range result.DoneVerification.Done {
+					if !done.Found || !done.ConduitIsDone {
+						unresolved = append(unresolved, fmt.Sprintf("#%d", done.CommentID))
+					}
+				}
+
+				lines = append(lines, decisionStyle("unresolved").Render(fmt.Sprintf(
+					"Done state is not visible for %s on D%d.",
+					strings.Join(unresolved, ", "), result.RevisionID,
+				)))
+			}
+		} else if result.DoneVerificationNote != "" {
+			lines = append(lines, decisionStyle("unresolved").Render(fmt.Sprintf(
+				"Done outcome unconfirmed on D%d: %s",
+				result.RevisionID, result.DoneVerificationNote,
+			)))
+		}
+		return strings.Join(lines, "\n")
 	}
 	switch result.Outcome {
 	case submissionOutcomeNotAttempted:
@@ -237,6 +274,11 @@ func renderSubmission(result submissionResult) string {
 			"Submission outcome is unknown on D%d: %s", result.RevisionID, result.Recovery,
 		))
 	}
+}
+
+func submissionHasDoneOutcome(submission *submissionResult) bool {
+	return submission != nil &&
+		(submission.DoneVerification != nil || submission.DoneVerificationNote != "")
 }
 
 func renderAIReview(result aiReviewResult) string {
@@ -468,6 +510,9 @@ func renderBatch(result batchResult) string {
 		}
 		return fmt.Sprintf("Validated %d planned mutations on D%d %s.", len(result.Mutations), result.RevisionID, submission)
 	case "published":
+		if submissionHasDoneOutcome(result.Submission) {
+			return renderSubmission(*result.Submission)
+		}
 		return successStyle.Render(fmt.Sprintf(
 			"Published %d batch mutations and every other pending draft you own on D%d with one submission.",
 			len(result.Mutations), result.RevisionID,

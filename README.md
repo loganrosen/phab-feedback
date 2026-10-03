@@ -242,7 +242,15 @@ Phabricator submission is revision-wide for the current user: `submit` and
 every `--submit` form publish all eligible pending inline drafts owned by that
 user on the revision, including drafts created earlier in the browser or by
 another command. Inspect existing drafts before approving publication.
-The CLI only reports publication when Phabricator returns its success redirect.
+Phabricator's success redirect confirms that the submission request was accepted;
+it does not by itself confirm that a particular inline Done state was published.
+When `done --submit`, `reply --done --submit`, or a batch includes Done targets,
+the CLI refreshes those comments and reports an unresolved state or an
+unconfirmed result instead of treating the redirect as proof. Conduit reports
+`isDone=true` for both published Done and a pending undo-Done draft, so even a
+visible Done state remains ambiguous. Standalone `submit` has no target IDs and
+explicitly reports that it did not verify specific Done states.
+
 Every server dialog or warning, including `Empty Comment` and
 `Action(s) With No Effect`, is surfaced as a rejection and is never
 automatically overridden. If submission reports an inline still being edited,
@@ -256,7 +264,9 @@ Mutation JSON includes the revision and action plus operation-specific fields
 such as `created_reply_id`, `parent_comment_id`, `draft`, `published`, and
 `final_done`. Submission results include `outcome`, `attempted`, `submitted`,
 and, when applicable, a bounded, control-safe `dialog`, `outcome_unknown`, or
-`recovery`. `outcome: "not-attempted"` means the workflow never reached
+`recovery`. Done submissions with explicit targets also include
+`done_verification`; a failed read after an accepted submission is described by
+`done_verification_note`. `outcome: "not-attempted"` means the workflow never reached
 submission, either because no new draft needed publication or because an
 earlier reply or Done operation failed. `outcome: "blocked"` identifies a
 submission prerequisite failure such as an unavailable CSRF token. Both have

@@ -189,15 +189,17 @@ type commentResult struct {
 }
 
 type submissionResult struct {
-	RevisionID     int    `json:"revision_id"`
-	Action         string `json:"action"`
-	Outcome        string `json:"outcome"`
-	Attempted      bool   `json:"attempted"`
-	Submitted      bool   `json:"submitted"`
-	OutcomeUnknown bool   `json:"outcome_unknown,omitempty"`
-	Redirect       string `json:"redirect,omitempty"`
-	Dialog         string `json:"dialog,omitempty"`
-	Recovery       string `json:"recovery,omitempty"`
+	RevisionID           int                 `json:"revision_id"`
+	Action               string              `json:"action"`
+	Outcome              string              `json:"outcome"`
+	Attempted            bool                `json:"attempted"`
+	Submitted            bool                `json:"submitted"`
+	OutcomeUnknown       bool                `json:"outcome_unknown,omitempty"`
+	Redirect             string              `json:"redirect,omitempty"`
+	Dialog               string              `json:"dialog,omitempty"`
+	Recovery             string              `json:"recovery,omitempty"`
+	DoneVerification     *verificationResult `json:"done_verification,omitempty"`
+	DoneVerificationNote string              `json:"done_verification_note,omitempty"`
 }
 
 const (

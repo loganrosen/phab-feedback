@@ -147,8 +147,17 @@ func (s *feedbackService) batch(manifest batchManifest, submit, dryRun bool) (ba
 		)
 		return result, nil
 	}
-	submission, err := s.submit(manifest.Revision)
+	doneIDs := batchDoneCommentIDs(result.Mutations)
+	var submission submissionResult
+	if len(doneIDs) > 0 {
+		submission, err = s.submitAndVerifyDone(manifest.Revision, doneIDs)
+	} else {
+		submission, err = s.submit(manifest.Revision)
+	}
 	result.Submission = &submission
+	if submission.Submitted {
+		reconcileBatchDoneMutations(result.Mutations, submission.DoneVerification)
+	}
 	if err != nil {
 		return failedBatch(result, 0, 0, "submit", completedMutations, err)
 	}
@@ -167,6 +176,37 @@ func (s *feedbackService) batch(manifest batchManifest, submit, dryRun bool) (ba
 	}
 	result.State = "published"
 	return result, nil
+}
+
+func batchDoneCommentIDs(mutations []batchMutation) []int {
+	ids := make([]int, 0)
+	for _, mutation := range mutations {
+		if mutation.Action == "done" {
+			ids = append(ids, mutation.CommentID)
+		}
+	}
+	return ids
+}
+
+func reconcileBatchDoneMutations(mutations []batchMutation, verification *verificationResult) {
+	byID := make(map[int]doneVerification)
+	if verification != nil {
+		for _, state := range verification.Done {
+			byID[state.CommentID] = state
+		}
+	}
+	for index := range mutations {
+		if mutations[index].Action != "done" {
+			continue
+		}
+		mutations[index].Draft = nil
+		mutations[index].Published = nil
+		mutations[index].FinalDone = nil
+		if state, ok := byID[mutations[index].CommentID]; ok {
+			isDone := state.Found && state.ConduitIsDone
+			mutations[index].FinalDone = &isDone
+		}
+	}
 }
 
 func batchMutationsHaveDraft(mutations []batchMutation) bool {
