@@ -570,8 +570,17 @@ func (s *feedbackService) reply(revision, parent, message string, done, submit b
 		submission, err = s.submit(revision)
 	}
 	result.Submission = &submission
+	if submission.Submitted {
+		result.Draft = false
+		result.Published = true
+	}
 	if done && submission.Submitted {
 		reconcileDoneAction(result.Done, submission.DoneVerification)
+		if result.Done != nil {
+			result.FinalDone = result.Done.FinalDone
+		} else {
+			result.FinalDone = nil
+		}
 	}
 	if err != nil {
 		if submission.Submitted {
@@ -594,8 +603,6 @@ func (s *feedbackService) reply(revision, parent, message string, done, submit b
 			),
 		}
 	}
-	result.Draft = false
-	result.Published = true
 	return result, nil
 }
 

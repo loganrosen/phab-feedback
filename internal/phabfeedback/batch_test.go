@@ -13,6 +13,11 @@ import (
 	"testing"
 )
 
+func sameBoolPointerValue(got, want *bool) bool {
+	return (got == nil && want == nil) ||
+		(got != nil && want != nil && *got == *want)
+}
+
 func TestBatchManifestValidationIsStrict(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "batch.json")
 	if err := os.WriteFile(path, []byte(`{
@@ -197,6 +202,60 @@ func TestBatchDraftsInOrderAndSubmitsOnce(t *testing.T) {
 	}
 }
 
+func TestBatchAcceptedSubmissionPublishesRepliesBeforeDoneVerificationFailure(t *testing.T) {
+	reply := "reply"
+	done := true
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	tests := []struct {
+		name               string
+		verificationResult any
+		wantFinalDone      *bool
+	}{
+		{
+			name: "target unresolved",
+			verificationResult: conduitResult(map[string]any{"data": []any{
+				transaction(2, "inline", 20, map[string]any{"isDone": false}),
+			}, "cursor": map[string]any{"after": nil}}),
+			wantFinalDone: new(false),
+		},
+		{
+			name:               "verification read failed",
+			verificationResult: errors.New("Conduit unavailable"),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, _ := serviceWith(
+				conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+				response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+				response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+				response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+				response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
+				response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
+				test.verificationResult,
+			)
+			result, err := service.batch(batchManifest{
+				Revision: "D1",
+				Actions: []batchManifestAction{
+					{CommentID: 20, Reply: &reply, Done: &done},
+				},
+			}, true, false)
+			if err == nil || result.State != "partial" ||
+				len(result.Mutations) != 2 ||
+				!strings.Contains(result.Mutations[0].Action, "reply") ||
+				!boolPointerValue(result.Mutations[0].Published) ||
+				boolPointerValue(result.Mutations[0].Draft) {
+				t.Fatalf("accepted reply was not reported as published: %#v %v", result, err)
+			}
+			doneMutation := result.Mutations[1]
+			if doneMutation.Action != "done" || doneMutation.Published != nil ||
+				doneMutation.Draft != nil || boolPointerValue(doneMutation.FinalDone) != boolPointerValue(test.wantFinalDone) {
+				t.Fatalf("unexpected Done result after verification failure: %#v", doneMutation)
+			}
+		})
+	}
+}
+
 func TestBatchSubmissionDialogPreservesDraftMutations(t *testing.T) {
 	reply := "reply"
 	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
@@ -343,6 +402,86 @@ func TestReplyDoneSubmitsAfterBothDrafts(t *testing.T) {
 		transport.requests[4].form(t).Get("op") != "done" ||
 		!strings.Contains(transport.requests[5].target, "/differential/revision/edit/1/comment/") {
 		t.Fatal("reply, Done, and submission ordering was not preserved")
+	}
+}
+
+func TestReplyDoneSubmitReconcilesTopLevelFinalDone(t *testing.T) {
+	tests := []struct {
+		name               string
+		verificationResult any
+		wantFinalDone      *bool
+	}{
+		{
+			name: "target unresolved",
+			verificationResult: conduitResult(map[string]any{"data": []any{
+				transaction(2, "inline", 20, map[string]any{"isDone": false}),
+			}, "cursor": map[string]any{"after": nil}}),
+			wantFinalDone: new(false),
+		},
+		{
+			name:               "verification read failed",
+			verificationResult: errors.New("Conduit unavailable"),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+			service, _ := serviceWith(
+				conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+				response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+				response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+				response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+				response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
+				response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
+				test.verificationResult,
+			)
+			result, err := service.reply("D1", "20", "reply", true, true)
+			if err == nil || result.Submission == nil || !result.Submission.Submitted ||
+				result.Done == nil || !sameBoolPointerValue(result.FinalDone, test.wantFinalDone) ||
+				!sameBoolPointerValue(result.Done.FinalDone, test.wantFinalDone) {
+				t.Fatalf("top-level and nested Done results disagree: %#v %v", result, err)
+			}
+		})
+	}
+}
+
+func TestReplyDoneAcceptedSubmissionPublishesReplyDespiteDoneVerificationFailure(t *testing.T) {
+	tests := []struct {
+		name               string
+		verificationResult any
+		wantFinalDone      *bool
+	}{
+		{
+			name: "target unresolved",
+			verificationResult: conduitResult(map[string]any{"data": []any{
+				transaction(2, "inline", 20, map[string]any{"isDone": false}),
+			}, "cursor": map[string]any{"after": nil}}),
+			wantFinalDone: new(false),
+		},
+		{
+			name:               "verification read failed",
+			verificationResult: errors.New("Conduit unavailable"),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+			service, _ := serviceWith(
+				conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+				response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+				response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+				response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+				response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
+				response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
+				test.verificationResult,
+			)
+			result, err := service.reply("D1", "20", "reply", true, true)
+			if err == nil || result.Submission == nil || !result.Submission.Submitted ||
+				!result.Published || result.Draft ||
+				!sameBoolPointerValue(result.FinalDone, test.wantFinalDone) {
+				t.Fatalf("accepted reply was not reported as published: %#v %v", result, err)
+			}
+		})
 	}
 }
 
