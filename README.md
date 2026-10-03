@@ -382,13 +382,13 @@ The optional skill is a small discovery stub: it tells agents to read
 phab-feedback skill install
 ```
 
-The default destination is `~/.agents/skills/phab-feedback/SKILL.md`, one of
-[Copilot CLI's documented personal skill locations](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills).
-Copilot also supports `~/.copilot/skills`; other agents have their own discovery
-paths. To use another location, pass the skill directory, not the file:
+The default destination is `~/.agents/skills/phab-feedback/SKILL.md`.
+Skill discovery paths vary by agent. To use another location, pass the skill
+directory, not the file. For example, for an agent that discovers project
+skills under `.agents/skills`:
 
 ```bash
-phab-feedback skill install --dir ~/.copilot/skills/phab-feedback
+phab-feedback skill install --dir .agents/skills/phab-feedback
 ```
 
 Installation needs no credentials or network access and does not change agent

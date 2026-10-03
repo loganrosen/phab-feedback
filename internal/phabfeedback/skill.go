@@ -55,8 +55,8 @@ func newSkillCommand(app *appOptions) *cobra.Command {
 		Use:   "install",
 		Short: "Explicitly install the small discovery SKILL.md",
 		Long: "Install only the discovery stub, not the full workflow guide. The default is\n" +
-			"~/.agents/skills/phab-feedback, supported by Copilot CLI. --dir selects the\n" +
-			"skill directory containing SKILL.md for another supported location.\n" +
+			"~/.agents/skills/phab-feedback. Skill discovery paths vary by agent; --dir\n" +
+			"selects the skill directory containing SKILL.md for another location.\n" +
 			"Matching content is left unchanged. Different content requires --force;\n" +
 			"symlinks and non-regular SKILL.md files are never replaced.",
 		Args: cobra.NoArgs,
