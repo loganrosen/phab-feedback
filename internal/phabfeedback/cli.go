@@ -392,7 +392,8 @@ func newReplyCommand(app *appOptions, revision string) *cobra.Command {
 			"Obtain separate approval for reply text, optional Done, and publication.\n" +
 			"Without --submit nothing is published. --submit publishes all eligible pending\n" +
 			"drafts you own on this revision, including unrelated browser drafts. Every server\n" +
-			"dialog blocks publication; warnings are never overridden.",
+			"dialog blocks publication; warnings are never overridden. With --done, the parent\n" +
+			"Done state is checked after submission; Conduit's positive state remains ambiguous.",
 		GroupID: "respond",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
@@ -437,6 +438,8 @@ func newDoneCommand(app *appOptions, revision string) *cobra.Command {
 			"Draft creation and publication require separate approval. --submit publishes\n" +
 			"all eligible pending drafts you own, including unrelated drafts, unless every\n" +
 			"target was already published Done and no new draft was created.\n" +
+			"After submission, Done targets are checked again; Conduit's positive state remains\n" +
+			"ambiguous between published Done and a pending undo-Done draft.\n" +
 			"If interrupted, inspect the comment and rerun done before any later submission:\n" +
 			"an upstream toggle may have left a pending undo-Done draft.",
 		GroupID: "respond",
@@ -453,7 +456,11 @@ func newDoneCommand(app *appOptions, revision string) *cobra.Command {
 
 func newSubmitCommand(app *appOptions, revision string) *cobra.Command {
 	command := newContextActionCommand(app, revision, "submit", "Publish every pending draft you own on this revision; never override warnings", false, true, func(service *feedbackService, revision string) (any, error) {
-		return service.submit(revision)
+		result, err := service.submit(revision)
+		if result.Submitted {
+			result.DoneVerificationNote = "No target comment IDs were supplied; target-specific Done state was not verified."
+		}
+		return result, err
 	})
 	command.GroupID = "respond"
 	command.Long = "Publish every pending draft you own that is eligible on this revision, including\n" +
@@ -461,7 +468,8 @@ func newSubmitCommand(app *appOptions, revision string) *cobra.Command {
 		"pending drafts and obtain publication approval separately from draft creation.\n" +
 		"Every server dialog, including Empty Comment and Action(s) With No Effect,\n" +
 		"blocks publication. Save or close any active inline editor, re-inspect drafts,\n" +
-		"and approve a retry; never override warnings."
+		"and approve a retry; never override warnings. Submission acceptance does not\n" +
+		"verify specific Done targets; use done --submit or verify --done COMMENT_ID."
 	return command
 }
 

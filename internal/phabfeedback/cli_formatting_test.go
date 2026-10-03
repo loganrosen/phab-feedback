@@ -229,6 +229,31 @@ func TestMutationTextOutput(t *testing.T) {
 			want: "Created Done drafts for #34, #35 on D12.",
 		},
 		{
+			command: "submit",
+			result: submissionResult{
+				RevisionID: 12, Submitted: true,
+				DoneVerificationNote: "No target comment IDs were supplied; target-specific Done state was not verified.",
+			},
+			want: "Phabricator accepted the submission request on D12.\n" +
+				"Done outcome unconfirmed on D12: No target comment IDs were supplied; target-specific Done state was not verified.",
+		},
+		{
+			command: "done",
+			result: commentActionResult{
+				RevisionID: 12,
+				Comments:   []commentAction{{CommentID: 34, FinalDone: new(true)}},
+				Submission: &submissionResult{
+					RevisionID: 12, Submitted: true,
+					DoneVerification: &verificationResult{
+						Status: "observed", ChecksPassed: true, DoneStateAmbiguous: true,
+						Done: []doneVerification{{CommentID: 34, Found: true, ConduitIsDone: true}},
+					},
+				},
+			},
+			want: "Phabricator accepted the submission request on D12.\n" +
+				"Done state observed for #34 on D12, but Conduit cannot confirm it is published rather than a pending undo-Done draft.",
+		},
+		{
 			command: "reply",
 			result: inlineReplyResult{
 				RevisionID: 12, ParentCommentID: 34, CreatedReplyID: 56,
@@ -288,6 +313,25 @@ func TestBatchUnchangedTextExplainsUnattemptedSubmission(t *testing.T) {
 		},
 	}))
 	want := "Submission was not attempted on D12: The batch created no new drafts; existing revision drafts remain unpublished."
+	if got != want {
+		t.Fatalf("text output = %q, want %q", got, want)
+	}
+}
+
+func TestBatchSubmissionDoesNotOverstateUnconfirmedDone(t *testing.T) {
+	got := ansi.Strip(renderBatch(batchResult{
+		RevisionID: 12,
+		State:      "published",
+		Submission: &submissionResult{
+			RevisionID: 12, Submitted: true,
+			DoneVerification: &verificationResult{
+				Status: "observed", ChecksPassed: true, DoneStateAmbiguous: true,
+				Done: []doneVerification{{CommentID: 34, Found: true, ConduitIsDone: true}},
+			},
+		},
+	}))
+	want := "Phabricator accepted the submission request on D12.\n" +
+		"Done state observed for #34 on D12, but Conduit cannot confirm it is published rather than a pending undo-Done draft."
 	if got != want {
 		t.Fatalf("text output = %q, want %q", got, want)
 	}

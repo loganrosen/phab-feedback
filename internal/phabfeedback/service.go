@@ -563,9 +563,32 @@ func (s *feedbackService) reply(revision, parent, message string, done, submit b
 	if !submit {
 		return result, nil
 	}
-	submission, err := s.submit(revision)
+	var submission submissionResult
+	if done {
+		submission, err = s.submitAndVerifyDone(revision, []int{comments[0].ID})
+	} else {
+		submission, err = s.submit(revision)
+	}
 	result.Submission = &submission
+	if submission.Submitted {
+		result.Draft = false
+		result.Published = true
+	}
+	if done && submission.Submitted {
+		reconcileDoneAction(result.Done, submission.DoneVerification)
+		if result.Done != nil {
+			result.FinalDone = result.Done.FinalDone
+		} else {
+			result.FinalDone = nil
+		}
+	}
 	if err != nil {
+		if submission.Submitted {
+			return result, &mutationResultError{
+				result: result,
+				err:    fmt.Errorf("remote partial failure: drafts were submitted but the Done outcome could not be confirmed: %w", err),
+			}
+		}
 		return result, &mutationResultError{
 			result: result,
 			err:    fmt.Errorf("remote partial failure: drafts were created but submission failed: %w", err),
@@ -579,13 +602,6 @@ func (s *feedbackService) reply(revision, parent, message string, done, submit b
 				result.CreatedReplyID,
 			),
 		}
-	}
-	result.Draft = false
-	result.Published = true
-	if result.Done != nil {
-		draft, published := false, true
-		result.Done.Draft = &draft
-		result.Done.Published = &published
 	}
 	return result, nil
 }
@@ -672,25 +688,21 @@ func (s *feedbackService) markDone(revision string, targets []string, submit boo
 		)
 		return result, nil
 	}
-	submission, err := s.submit(revision)
+	submission, err := s.submitAndVerifyDone(revision, commentActionIDs(result.Comments))
 	result.Submission = &submission
+	if submission.Submitted {
+		reconcileDoneActions(result.Comments, submission.DoneVerification)
+	}
 	if err != nil {
 		return result, &mutationResultError{
 			result: result,
-			err:    fmt.Errorf("remote partial failure: Done drafts were created but submission failed: %w", err),
+			err:    fmt.Errorf("remote partial failure: Done drafts were created but submission or outcome verification failed: %w", err),
 		}
 	}
 	if !submission.Submitted {
 		return result, &mutationResultError{
 			result: result,
 			err:    fmt.Errorf("remote partial failure: Done drafts were created but Phabricator reported no publishable effect; inspect the revision"),
-		}
-	}
-	for index := range result.Comments {
-		if result.Comments[index].Draft != nil && *result.Comments[index].Draft {
-			draft, published := false, true
-			result.Comments[index].Draft = &draft
-			result.Comments[index].Published = &published
 		}
 	}
 	return result, nil
@@ -907,6 +919,74 @@ func unattemptedSubmission(revisionID int, recovery string) *submissionResult {
 	return &submissionResult{
 		RevisionID: revisionID, Action: "submit",
 		Outcome: submissionOutcomeNotAttempted, Recovery: recovery,
+	}
+}
+
+func (s *feedbackService) submitAndVerifyDone(revision string, commentIDs []int) (submissionResult, error) {
+	if len(commentIDs) == 0 {
+		return submissionResult{}, fmt.Errorf("at least one Done target is required")
+	}
+	submission, err := s.submit(revision)
+	if err != nil || !submission.Submitted {
+		return submission, err
+	}
+	targets := make([]string, 0, len(commentIDs))
+	for _, commentID := range commentIDs {
+		targets = append(targets, strconv.Itoa(commentID))
+	}
+	verification, err := s.verify(revision, nil, targets)
+	if err != nil {
+		submission.DoneVerificationNote = "The submission was accepted, but the Done state could not be checked."
+		return submission, fmt.Errorf("submission was accepted, but Done outcome verification failed: %w", err)
+	}
+	submission.DoneVerification = &verification
+	if !verification.ChecksPassed {
+		unresolved := make([]string, 0, len(verification.Done))
+		for _, state := range verification.Done {
+			if !state.Found || !state.ConduitIsDone {
+				unresolved = append(unresolved, fmt.Sprintf("#%d", state.CommentID))
+			}
+		}
+		return submission, fmt.Errorf(
+			"submission was accepted, but Done state is not visible for %s",
+			strings.Join(unresolved, ", "),
+		)
+	}
+	return submission, nil
+}
+
+func commentActionIDs(comments []commentAction) []int {
+	ids := make([]int, 0, len(comments))
+	for _, comment := range comments {
+		ids = append(ids, comment.CommentID)
+	}
+	return ids
+}
+
+func reconcileDoneAction(comment *commentAction, verification *verificationResult) {
+	if comment == nil {
+		return
+	}
+	comment.IsDone = nil
+	comment.FinalDone = nil
+	comment.Draft = nil
+	comment.Published = nil
+	if verification == nil {
+		return
+	}
+	for _, state := range verification.Done {
+		if state.CommentID == comment.CommentID {
+			isDone := state.Found && state.ConduitIsDone
+			comment.IsDone = &isDone
+			comment.FinalDone = &isDone
+			return
+		}
+	}
+}
+
+func reconcileDoneActions(comments []commentAction, verification *verificationResult) {
+	for index := range comments {
+		reconcileDoneAction(&comments[index], verification)
 	}
 }
 
