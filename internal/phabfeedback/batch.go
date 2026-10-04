@@ -223,6 +223,8 @@ func (s *feedbackService) draftBatchMutation(
 
 // batchFirstReplyDoneTargets returns parents that would receive their first
 // reply and a Done state in the same submission.
+// Phabricator drops Done when the same submission publishes the parent's
+// first reply, so these targets need replies published first: https://we.phorge.it/T16847
 func batchFirstReplyDoneTargets(manifest batchManifest, comments map[int]validatedComment) []int {
 	ids := make([]int, 0)
 	for _, action := range manifest.Actions {

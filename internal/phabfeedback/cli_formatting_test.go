@@ -438,6 +438,25 @@ func TestBatchSubmissionFailureTextIncludesOutcome(t *testing.T) {
 	}
 }
 
+func TestBatchDraftFailureTextShowsPublishedRepliesAndUnattemptedDone(t *testing.T) {
+	got := ansi.Strip(renderBatch(batchResult{
+		RevisionID: 12,
+		State:      "partial",
+		Failure: &batchFailure{
+			ActionIndex: 2, MutationIndex: 3, Action: "done",
+			CompletedMutations: 2, NotAttemptedDone: []int{56},
+		},
+		ReplySubmission: &submissionResult{RevisionID: 12, Submitted: true},
+	}))
+	want := "Batch stopped at manifest action 2, mutation 3 (done), after 2 completed mutations on D12.\n" +
+		"Reply submission:\n" +
+		"Submitted every pending draft you own on D12.\n" +
+		"Done was not attempted for #56."
+	if got != want {
+		t.Fatalf("text output = %q, want %q", got, want)
+	}
+}
+
 func TestAcceptedSubmissionWithUnresolvedDoneShowsRecovery(t *testing.T) {
 	got := ansi.Strip(renderSubmission(submissionResult{
 		RevisionID: 12, Submitted: true,

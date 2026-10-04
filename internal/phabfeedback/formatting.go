@@ -542,28 +542,34 @@ func renderBatch(result batchResult) string {
 		if result.Failure == nil {
 			return decisionStyle("unresolved").Render(fmt.Sprintf("Batch stopped after an unreported failure on D%d.", result.RevisionID))
 		}
+		var lines []string
 		if result.Failure.Action == "submit" {
-			lines := []string{decisionStyle("unresolved").Render(fmt.Sprintf(
+			lines = append(lines, decisionStyle("unresolved").Render(fmt.Sprintf(
 				"Batch submission stopped after %d completed mutations on D%d.",
 				result.Failure.CompletedMutations, result.RevisionID,
-			))}
-			if result.Submission != nil {
-				lines = append(lines, renderSubmission(*result.Submission))
-			} else if result.ReplySubmission != nil {
-				lines = append(lines, renderSubmission(*result.ReplySubmission))
-			}
-			if len(result.Failure.NotAttemptedDone) > 0 {
-				lines = append(lines, detailStyle.Render(fmt.Sprintf(
-					"Done was not attempted for %s.", commentIDList(result.Failure.NotAttemptedDone),
-				)))
-			}
-			return strings.Join(lines, "\n")
+			)))
+		} else {
+			lines = append(lines, decisionStyle("unresolved").Render(fmt.Sprintf(
+				"Batch stopped at manifest action %d, mutation %d (%s), after %d completed mutations on D%d.",
+				result.Failure.ActionIndex, result.Failure.MutationIndex, result.Failure.Action,
+				result.Failure.CompletedMutations, result.RevisionID,
+			)))
 		}
-		return decisionStyle("unresolved").Render(fmt.Sprintf(
-			"Batch stopped at manifest action %d, mutation %d (%s), after %d completed mutations on D%d.",
-			result.Failure.ActionIndex, result.Failure.MutationIndex, result.Failure.Action,
-			result.Failure.CompletedMutations, result.RevisionID,
-		))
+		if result.ReplySubmission != nil {
+			lines = append(lines, detailStyle.Render("Reply submission:"), renderSubmission(*result.ReplySubmission))
+		}
+		if result.Submission != nil {
+			if result.ReplySubmission != nil {
+				lines = append(lines, detailStyle.Render("Done submission:"))
+			}
+			lines = append(lines, renderSubmission(*result.Submission))
+		}
+		if len(result.Failure.NotAttemptedDone) > 0 {
+			lines = append(lines, detailStyle.Render(fmt.Sprintf(
+				"Done was not attempted for %s.", commentIDList(result.Failure.NotAttemptedDone),
+			)))
+		}
+		return strings.Join(lines, "\n")
 	default:
 		return successStyle.Render(fmt.Sprintf("Created %d batch mutation drafts on D%d.", len(result.Mutations), result.RevisionID))
 	}

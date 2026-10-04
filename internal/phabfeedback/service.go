@@ -521,6 +521,7 @@ func (s *feedbackService) reply(revision, parent, message string, done, submit b
 	if err != nil {
 		return inlineReplyResult{}, err
 	}
+	// Publishing a first reply and Done together loses the Done: https://we.phorge.it/T16847
 	firstReplyDone := done && !comments[0].HasReplies
 	if firstReplyDone && !submit {
 		return inlineReplyResult{}, firstReplyDoneError([]int{comments[0].ID})
@@ -549,7 +550,7 @@ func (s *feedbackService) reply(revision, parent, message string, done, submit b
 			result.Published = true
 		}
 		if submitErr == nil && !replySubmission.Submitted {
-			submitErr = fmt.Errorf("Phabricator reported no publishable effect; inspect the revision")
+			submitErr = fmt.Errorf("reply draft was created but Phabricator reported no publishable effect; inspect the revision")
 		}
 		if submitErr != nil {
 			return result, &mutationResultError{
