@@ -438,6 +438,24 @@ func TestBatchSubmissionFailureTextIncludesOutcome(t *testing.T) {
 	}
 }
 
+func TestAcceptedSubmissionWithUnresolvedDoneShowsRecovery(t *testing.T) {
+	got := ansi.Strip(renderSubmission(submissionResult{
+		RevisionID: 12, Submitted: true,
+		DoneVerification: &verificationResult{
+			Status: "failed", Done: []doneVerification{
+				{CommentID: 34, Found: true, ConduitIsDone: false, State: "not-done"},
+			},
+		},
+		Recovery: "Done state is not visible for #34. Inspect each target before retrying; Done is a toggle and submission is revision-wide.",
+	}))
+	want := "Phabricator accepted the submission request on D12.\n" +
+		"Done state is not visible for #34 on D12.\n" +
+		"Recovery: Done state is not visible for #34. Inspect each target before retrying; Done is a toggle and submission is revision-wide."
+	if got != want {
+		t.Fatalf("text output = %q, want %q", got, want)
+	}
+}
+
 func TestBatchAndMutationHelpExposeExplicitPublicationFlags(t *testing.T) {
 	tests := []struct {
 		args []string

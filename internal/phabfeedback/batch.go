@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -80,67 +81,76 @@ func (s *feedbackService) batch(manifest batchManifest, submit, dryRun bool) (ba
 	for _, comment := range comments {
 		byID[comment.ID] = comment
 	}
+	firstReplyDone := batchFirstReplyDoneTargets(manifest, byID)
+	if len(firstReplyDone) > 0 && !submit {
+		return batchResult{}, firstReplyDoneError(firstReplyDone)
+	}
+	twoPhase := len(firstReplyDone) > 0
+	planned := plannedBatchMutations(manifest)
 	result := batchResult{
 		RevisionID: revisionID, Action: "batch", DryRun: dryRun, Submit: submit,
-		State: "planned", Mutations: plannedBatchMutations(manifest),
+		TwoPhase: twoPhase, State: "planned", Mutations: planned,
 	}
 	if dryRun {
 		return result, nil
 	}
-	result.Mutations = make([]batchMutation, 0, len(result.Mutations))
+	result.Mutations = make([]batchMutation, 0, len(planned))
 	completedMutations := 0
-	mutationIndex := 0
-	for index, action := range manifest.Actions {
-		position := index + 1
-		comment := byID[action.CommentID]
-		if action.Reply != nil {
-			mutationIndex++
-			reply, replyErr := s.draftInlineReplyValidated(revisionID, comment, *action.Reply)
-			mutation := batchMutation{
-				ActionIndex: position, MutationIndex: mutationIndex,
-				Action: "reply", CommentID: action.CommentID,
-				ParentCommentID: action.CommentID, CreatedReplyID: reply.CreatedReplyID,
-				Saved: reply.Saved,
+	draftPlanned := func(include func(batchMutation) bool) error {
+		for _, mutation := range planned {
+			if !include(mutation) {
+				continue
 			}
-			if reply.Saved {
-				draft, published := reply.Draft, reply.Published
-				mutation.Draft = &draft
-				mutation.Published = &published
-			}
-			result.Mutations = append(result.Mutations, mutation)
-			if replyErr != nil {
-				return failedBatch(result, position, mutationIndex, "reply", completedMutations, replyErr)
+			action := manifest.Actions[mutation.ActionIndex-1]
+			if err := s.draftBatchMutation(revisionID, byID[mutation.CommentID], action, mutation, &result); err != nil {
+				return err
 			}
 			completedMutations++
 		}
-		if action.Done != nil {
-			mutationIndex++
-			done, doneErr := s.markDoneValidated(revisionID, []validatedComment{comment})
-			var mutation batchMutation
-			if len(done.Comments) > 0 {
-				item := done.Comments[0]
-				mutation = batchMutation{
-					ActionIndex: position, MutationIndex: mutationIndex,
-					Action: "done", CommentID: action.CommentID,
-					Draft: item.Draft, Published: item.Published,
-					FinalDone:       item.FinalDone,
-					ObservedChecked: item.ObservedChecked, ObservedDraftState: item.ObservedDraftState,
-					Recovery: item.Recovery,
-				}
-				result.Mutations = append(result.Mutations, mutation)
+		return nil
+	}
+	var deferredDone []int
+	if twoPhase {
+		for _, mutation := range planned {
+			if mutation.Action == "done" {
+				deferredDone = append(deferredDone, mutation.CommentID)
 			}
-			if doneErr != nil {
-				return failedBatch(result, position, mutationIndex, "done", completedMutations, doneErr)
-			}
-			completedMutations++
 		}
+	}
+	if err := draftPlanned(func(mutation batchMutation) bool {
+		return !twoPhase || mutation.Action == "reply"
+	}); err != nil {
+		last := result.Mutations[len(result.Mutations)-1]
+		return failedBatch(result, last.ActionIndex, last.MutationIndex, last.Action, completedMutations, deferredDone, err)
 	}
 	result.State = "draft"
 	if !submit {
 		return result, nil
 	}
+	if twoPhase {
+		replySubmission, err := s.submit(manifest.Revision)
+		result.ReplySubmission = &replySubmission
+		if replySubmission.Submitted {
+			markBatchRepliesPublished(result.Mutations)
+		}
+		if err == nil && !replySubmission.Submitted {
+			err = fmt.Errorf("reply drafts were created but Phabricator reported no publishable effect; inspect the revision")
+		}
+		if err != nil {
+			return failedBatch(result, 0, 0, "submit", completedMutations, deferredDone, err)
+		}
+		if err := draftPlanned(func(mutation batchMutation) bool { return mutation.Action == "done" }); err != nil {
+			last := result.Mutations[len(result.Mutations)-1]
+			return failedBatch(result, last.ActionIndex, last.MutationIndex, last.Action, completedMutations, nil, err)
+		}
+		sortBatchMutations(result.Mutations)
+	}
 	if !batchMutationsHaveDraft(result.Mutations) {
 		result.State = "unchanged"
+		if twoPhase {
+			result.State = "published"
+			return result, nil
+		}
 		result.Submission = unattemptedSubmission(
 			revisionID,
 			"The batch created no new drafts; existing revision drafts remain unpublished.",
@@ -160,16 +170,81 @@ func (s *feedbackService) batch(manifest batchManifest, submit, dryRun bool) (ba
 		markBatchRepliesPublished(result.Mutations)
 	}
 	if err != nil {
-		return failedBatch(result, 0, 0, "submit", completedMutations, err)
+		return failedBatch(result, 0, 0, "submit", completedMutations, nil, err)
 	}
 	if !submission.Submitted {
 		return failedBatch(
-			result, 0, 0, "submit", completedMutations,
+			result, 0, 0, "submit", completedMutations, nil,
 			fmt.Errorf("batch drafts were created but Phabricator reported no publishable effect; inspect the revision"),
 		)
 	}
 	result.State = "published"
 	return result, nil
+}
+
+func (s *feedbackService) draftBatchMutation(
+	revisionID int,
+	comment validatedComment,
+	action batchManifestAction,
+	planned batchMutation,
+	result *batchResult,
+) error {
+	if planned.Action == "reply" {
+		reply, err := s.draftInlineReplyValidated(revisionID, comment, *action.Reply)
+		mutation := batchMutation{
+			ActionIndex: planned.ActionIndex, MutationIndex: planned.MutationIndex,
+			Action: "reply", CommentID: action.CommentID,
+			ParentCommentID: action.CommentID, CreatedReplyID: reply.CreatedReplyID,
+			Saved: reply.Saved,
+		}
+		if reply.Saved {
+			draft, published := reply.Draft, reply.Published
+			mutation.Draft = &draft
+			mutation.Published = &published
+		}
+		result.Mutations = append(result.Mutations, mutation)
+		return err
+	}
+	done, err := s.markDoneValidated(revisionID, []validatedComment{comment})
+	mutation := batchMutation{
+		ActionIndex: planned.ActionIndex, MutationIndex: planned.MutationIndex,
+		Action: "done", CommentID: action.CommentID,
+	}
+	if len(done.Comments) > 0 {
+		item := done.Comments[0]
+		mutation.Draft, mutation.Published = item.Draft, item.Published
+		mutation.FinalDone = item.FinalDone
+		mutation.ObservedChecked, mutation.ObservedDraftState = item.ObservedChecked, item.ObservedDraftState
+		mutation.Recovery = item.Recovery
+	}
+	result.Mutations = append(result.Mutations, mutation)
+	return err
+}
+
+// batchFirstReplyDoneTargets returns parents that would receive their first
+// reply and a Done state in the same submission.
+func batchFirstReplyDoneTargets(manifest batchManifest, comments map[int]validatedComment) []int {
+	ids := make([]int, 0)
+	for _, action := range manifest.Actions {
+		if action.Reply != nil && action.Done != nil && !comments[action.CommentID].HasReplies {
+			ids = append(ids, action.CommentID)
+		}
+	}
+	return ids
+}
+
+func firstReplyDoneError(ids []int) error {
+	return fmt.Errorf(
+		"refusing to draft a first reply and Done together for %s: Phabricator drops the Done state when both are published in one submission. "+
+			"Add --submit to publish the replies and then the Done states in two submissions, or publish the replies first and mark Done afterward",
+		commentIDList(ids),
+	)
+}
+
+func sortBatchMutations(mutations []batchMutation) {
+	sort.SliceStable(mutations, func(i, j int) bool {
+		return mutations[i].MutationIndex < mutations[j].MutationIndex
+	})
 }
 
 func markBatchRepliesPublished(mutations []batchMutation) {
@@ -253,12 +328,15 @@ func failedBatch(
 	actionIndex, mutationIndex int,
 	action string,
 	completedMutations int,
+	notAttemptedDone []int,
 	cause error,
 ) (batchResult, error) {
+	sortBatchMutations(result.Mutations)
 	result.State = "partial"
 	result.Failure = &batchFailure{
 		ActionIndex: actionIndex, MutationIndex: mutationIndex,
-		Action: action, CompletedMutations: completedMutations, Error: cause.Error(),
+		Action: action, CompletedMutations: completedMutations,
+		NotAttemptedDone: notAttemptedDone, Error: cause.Error(),
 	}
 	location := "during submission"
 	if actionIndex > 0 {

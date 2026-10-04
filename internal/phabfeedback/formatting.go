@@ -135,6 +135,8 @@ func renderInlineReply(result inlineReplyResult) string {
 	}
 	if result.Submission != nil {
 		lines = append(lines, renderSubmission(*result.Submission))
+	} else if result.ReplySubmission != nil {
+		lines = append(lines, renderSubmission(*result.ReplySubmission))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -244,6 +246,9 @@ func renderSubmission(result submissionResult) string {
 				"Done outcome unconfirmed on D%d: %s",
 				result.RevisionID, result.DoneVerificationNote,
 			)))
+		}
+		if result.Recovery != "" {
+			lines = append(lines, detailStyle.Render("Recovery: "+result.Recovery))
 		}
 		return strings.Join(lines, "\n")
 	}
@@ -505,17 +510,27 @@ func renderBatch(result batchResult) string {
 	switch result.State {
 	case "planned":
 		submission := "without submission"
-		if result.Submit {
+		if result.TwoPhase {
+			submission = "with two revision-wide submissions: replies first, then Done states"
+		} else if result.Submit {
 			submission = "with one final revision-wide submission"
 		}
 		return fmt.Sprintf("Validated %d planned mutations on D%d %s.", len(result.Mutations), result.RevisionID, submission)
 	case "published":
 		if submissionHasDoneOutcome(result.Submission) {
-			return renderSubmission(*result.Submission)
+			rendered := renderSubmission(*result.Submission)
+			if result.TwoPhase {
+				rendered = detailStyle.Render("Published replies before Done states to avoid a Phabricator bug that drops Done on a first reply.") + "\n" + rendered
+			}
+			return rendered
+		}
+		submissions := "one submission"
+		if result.TwoPhase && result.Submission != nil {
+			submissions = "two submissions"
 		}
 		return successStyle.Render(fmt.Sprintf(
-			"Published %d batch mutations and every other pending draft you own on D%d with one submission.",
-			len(result.Mutations), result.RevisionID,
+			"Published %d batch mutations and every other pending draft you own on D%d with %s.",
+			len(result.Mutations), result.RevisionID, submissions,
 		))
 	case "unchanged":
 		reason := "the batch created no new drafts"
@@ -534,6 +549,13 @@ func renderBatch(result batchResult) string {
 			))}
 			if result.Submission != nil {
 				lines = append(lines, renderSubmission(*result.Submission))
+			} else if result.ReplySubmission != nil {
+				lines = append(lines, renderSubmission(*result.ReplySubmission))
+			}
+			if len(result.Failure.NotAttemptedDone) > 0 {
+				lines = append(lines, detailStyle.Render(fmt.Sprintf(
+					"Done was not attempted for %s.", commentIDList(result.Failure.NotAttemptedDone),
+				)))
 			}
 			return strings.Join(lines, "\n")
 		}
@@ -606,4 +628,12 @@ func orDefault(value any, fallback string) any {
 		return fallback
 	}
 	return value
+}
+
+func commentIDList(ids []int) string {
+	labels := make([]string, 0, len(ids))
+	for _, id := range ids {
+		labels = append(labels, fmt.Sprintf("#%d", id))
+	}
+	return strings.Join(labels, ", ")
 }

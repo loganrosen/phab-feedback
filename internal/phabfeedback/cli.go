@@ -393,7 +393,9 @@ func newReplyCommand(app *appOptions, revision string) *cobra.Command {
 			"Without --submit nothing is published. --submit publishes all eligible pending\n" +
 			"drafts you own on this revision, including unrelated browser drafts. Every server\n" +
 			"dialog blocks publication; warnings are never overridden. With --done, the parent\n" +
-			"Done state is checked after submission; Conduit's positive state remains ambiguous.",
+			"Done state is checked after submission; Conduit's positive state remains ambiguous.\n" +
+			"If this is the parent's first reply, --done requires --submit and publishes in two\n" +
+			"submissions, reply first, because Phabricator drops Done published with a first reply.",
 		GroupID: "respond",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
@@ -512,8 +514,11 @@ func newBatchCommand(app *appOptions) *cobra.Command {
 		Short: "Validate and execute ordered reply and Done actions from JSON",
 		Long: "Validate every manifest action and target before creating reply and Done drafts\n" +
 			"in order. --dry-run makes no mutations. Draft creation and publication require\n" +
-			"separate approval. --submit submits at most once and publishes all eligible pending\n" +
-			"drafts you own on the revision, including drafts outside the manifest.\n" +
+			"separate approval. --submit publishes all eligible pending drafts you own on the\n" +
+			"revision, including drafts outside the manifest. It submits once, or twice when a\n" +
+			"comment gets its first reply and Done: replies first, then Done states, because\n" +
+			"Phabricator drops Done published with a first reply. Without --submit, that\n" +
+			"combination is rejected before any mutation.\n" +
 			"Remote partial failures may leave earlier drafts; inspect recovery and exit status\n" +
 			"before retrying. No submission follows a failed draft operation. Server dialogs\n" +
 			"block publication and are never overridden. All-already-Done batches with no new\n" +
