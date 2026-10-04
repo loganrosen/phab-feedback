@@ -66,6 +66,10 @@ approval. Prefer message files or stdin:
   were explicitly approved.
 - Use `D123 reply ... --done` only when the reply and Done action were both
   explicitly approved. Add `--submit` only when publication was also approved.
+  For a parent's first reply, `--done` requires `--submit` and publishes twice,
+  reply first, because Phabricator drops a Done state published with a first
+  reply. If publication is not approved yet, draft only the reply now and mark
+  Done after it is published.
 - Use `D123 done ... --submit` only when drafting the Done states and publishing
   all pending drafts were both explicitly approved.
 - Use `remove-comment` only for an accidental top-level comment.
@@ -96,11 +100,20 @@ Validate it before acting:
 "${PHAB_FEEDBACK[@]}" batch actions.json --dry-run --format json
 ```
 
-Run without `--submit` to create drafts only. Add `--submit` only when one final
+Run without `--submit` to create drafts only. Add `--submit` only when
 publication of all pending drafts was explicitly approved. The CLI validates
 the complete manifest and all target comments before mutation, creates drafts
-in order, submits at most once, and reports unavoidable remote partial failures.
-The final submission is revision-wide for the current user, not scoped to the
+in order, and reports unavoidable remote partial failures.
+
+If an action gives a comment its first reply and `done: true`, the dry run
+reports `two_phase: true` with `--submit` and fails without it. Phabricator
+drops a Done state published together with a first reply, so `--submit` drafts
+and publishes every reply, then drafts and publishes the Done states. Tell the
+user that approval covers two submissions. Without approval to publish, split
+the work: a reply-only batch, then after its approved submission, a Done-only
+batch.
+
+Each submission is revision-wide for the current user, not scoped to the
 manifest. If all requested Done states are already published and the batch
 creates no new draft, the CLI reports `outcome: "not-attempted"` so it does not
 publish unrelated drafts; use the standalone `submit` command only after

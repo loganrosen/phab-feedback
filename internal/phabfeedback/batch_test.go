@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -159,7 +160,7 @@ func TestBatchDraftsInOrderAndSubmitsOnce(t *testing.T) {
 	done := true
 	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
 	service, transport := serviceWith(
-		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		conduitResult(map[string]any{"data": []any{inline, publishedReply(90, 20)}, "cursor": map[string]any{"after": nil}}),
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
 		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
@@ -226,7 +227,7 @@ func TestBatchAcceptedSubmissionPublishesRepliesBeforeDoneVerificationFailure(t 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			service, _ := serviceWith(
-				conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+				conduitResult(map[string]any{"data": []any{inline, publishedReply(90, 20)}, "cursor": map[string]any{"after": nil}}),
 				response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 				response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
 				response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
@@ -253,6 +254,67 @@ func TestBatchAcceptedSubmissionPublishesRepliesBeforeDoneVerificationFailure(t 
 				t.Fatalf("unexpected Done result after verification failure: %#v", doneMutation)
 			}
 		})
+	}
+}
+
+func TestBatchMixedActionsReportsUnresolvedDoneAfterAcceptedSubmission(t *testing.T) {
+	reply20, reply21, done := "reply 20", "reply 21", true
+	initial := []any{
+		transaction(1, "inline", 20, map[string]any{"isDone": false}),
+		transaction(2, "inline", 21, map[string]any{"isDone": false}),
+		transaction(3, "inline", 22, map[string]any{"isDone": false}),
+		publishedReply(90, 20),
+		publishedReply(91, 21),
+	}
+	service, transport := serviceWith(
+		conduitResult(map[string]any{"data": initial, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 56}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 56}}}),
+		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
+		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
+		response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
+		conduitResult(map[string]any{"data": []any{
+			transaction(4, "inline", 20, map[string]any{"isDone": false}),
+			transaction(5, "inline", 21, map[string]any{"isDone": true}),
+			transaction(6, "inline", 22, map[string]any{"isDone": true}),
+		}, "cursor": map[string]any{"after": nil}}),
+	)
+	result, err := service.batch(batchManifest{
+		Revision: "D1",
+		Actions: []batchManifestAction{
+			{CommentID: 20, Reply: &reply20, Done: &done},
+			{CommentID: 21, Reply: &reply21, Done: &done},
+			{CommentID: 22, Done: &done},
+		},
+	}, true, false)
+	if err == nil || !strings.Contains(err.Error(), "#20") ||
+		result.State != "partial" || result.Failure == nil || result.Failure.Action != "submit" ||
+		result.Submission == nil || !result.Submission.Submitted ||
+		result.Submission.DoneVerification == nil ||
+		result.Submission.DoneVerification.Status != "failed" ||
+		!strings.Contains(result.Submission.Recovery, "Done is a toggle") ||
+		len(result.Mutations) != 5 {
+		t.Fatalf("unresolved Done state was not reported as a partial failure: %#v %v", result, err)
+	}
+	if !boolPointerValue(result.Mutations[0].Published) ||
+		!sameBoolPointerValue(result.Mutations[1].FinalDone, new(false)) ||
+		!boolPointerValue(result.Mutations[2].Published) ||
+		!sameBoolPointerValue(result.Mutations[3].FinalDone, new(true)) ||
+		!sameBoolPointerValue(result.Mutations[4].FinalDone, new(true)) {
+		t.Fatalf("unexpected per-mutation states after submission: %#v", result.Mutations)
+	}
+	submits := 0
+	for _, request := range transport.requests {
+		if strings.Contains(request.target, "/differential/revision/edit/1/comment/") {
+			submits++
+		}
+	}
+	if submits != 1 {
+		t.Fatalf("submission count = %d, want one revision-wide submission", submits)
 	}
 }
 
@@ -351,7 +413,7 @@ func TestReplySubmitFailureEmbedsUpdatedStructuredResult(t *testing.T) {
 func TestReplyDoneFailureReportsDraftedReplyAndSkipsSubmit(t *testing.T) {
 	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
 	service, transport := serviceWith(
-		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		conduitResult(map[string]any{"data": []any{inline, publishedReply(90, 20)}, "cursor": map[string]any{"after": nil}}),
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
 		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
@@ -376,7 +438,7 @@ func TestReplyDoneFailureReportsDraftedReplyAndSkipsSubmit(t *testing.T) {
 func TestReplyDoneSubmitsAfterBothDrafts(t *testing.T) {
 	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
 	service, transport := serviceWith(
-		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		conduitResult(map[string]any{"data": []any{inline, publishedReply(90, 20)}, "cursor": map[string]any{"after": nil}}),
 		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
 		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
@@ -427,7 +489,7 @@ func TestReplyDoneSubmitReconcilesTopLevelFinalDone(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
 			service, _ := serviceWith(
-				conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+				conduitResult(map[string]any{"data": []any{inline, publishedReply(90, 20)}, "cursor": map[string]any{"after": nil}}),
 				response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 				response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
 				response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
@@ -467,7 +529,7 @@ func TestReplyDoneAcceptedSubmissionPublishesReplyDespiteDoneVerificationFailure
 		t.Run(test.name, func(t *testing.T) {
 			inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
 			service, _ := serviceWith(
-				conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+				conduitResult(map[string]any{"data": []any{inline, publishedReply(90, 20)}, "cursor": map[string]any{"after": nil}}),
 				response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
 				response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
 				response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
@@ -674,5 +736,233 @@ func TestVerifyCLIExitsNonzeroAndPrintsStructuredFailure(t *testing.T) {
 		!strings.Contains(string(body), `"checks_passed": false`) ||
 		!strings.Contains(string(body), `"conduit_is_done": false`) {
 		t.Fatalf("unexpected output: %s", body)
+	}
+}
+
+func publishedReply(comment, parent int) map[string]any {
+	return transaction(comment, "inline", comment, map[string]any{
+		"isDone": false, "replyToCommentPHID": "PHID-CMT-" + strconv.Itoa(parent),
+	})
+}
+
+func submissionRequestIndexes(t *testing.T, transport *fakeTransport) []int {
+	t.Helper()
+	indexes := make([]int, 0)
+	for index, request := range transport.requests {
+		if strings.Contains(request.target, "/differential/revision/edit/1/comment/") {
+			indexes = append(indexes, index)
+		}
+	}
+	return indexes
+}
+
+func TestBatchPublishesFirstRepliesBeforeDone(t *testing.T) {
+	reply20, reply21, done := "reply 20", "reply 21", true
+	initial := []any{
+		transaction(1, "inline", 20, map[string]any{"isDone": false}),
+		transaction(2, "inline", 21, map[string]any{"isDone": false}),
+		transaction(3, "inline", 22, map[string]any{"isDone": false}),
+	}
+	service, transport := serviceWith(
+		conduitResult(map[string]any{"data": initial, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 56}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 56}}}),
+		response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
+		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
+		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
+		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
+		response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
+		conduitResult(map[string]any{"data": []any{
+			transaction(4, "inline", 20, map[string]any{"isDone": true}),
+			transaction(5, "inline", 21, map[string]any{"isDone": true}),
+			transaction(6, "inline", 22, map[string]any{"isDone": true}),
+		}, "cursor": map[string]any{"after": nil}}),
+	)
+	result, err := service.batch(batchManifest{
+		Revision: "D1",
+		Actions: []batchManifestAction{
+			{CommentID: 20, Reply: &reply20, Done: &done},
+			{CommentID: 21, Reply: &reply21, Done: &done},
+			{CommentID: 22, Done: &done},
+		},
+	}, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.TwoPhase || result.State != "published" ||
+		result.ReplySubmission == nil || !result.ReplySubmission.Submitted ||
+		result.Submission == nil || result.Submission.DoneVerification == nil ||
+		len(result.Submission.DoneVerification.Done) != 3 {
+		t.Fatalf("unexpected two-phase result: %#v", result)
+	}
+	wantActions := []string{"reply", "done", "reply", "done", "done"}
+	for index, mutation := range result.Mutations {
+		if mutation.MutationIndex != index+1 || mutation.Action != wantActions[index] {
+			t.Fatalf("mutations are not in manifest order: %#v", result.Mutations)
+		}
+	}
+	if !boolPointerValue(result.Mutations[0].Published) || !boolPointerValue(result.Mutations[2].Published) ||
+		!boolPointerValue(result.Mutations[1].FinalDone) || !boolPointerValue(result.Mutations[4].FinalDone) {
+		t.Fatalf("unexpected per-mutation states: %#v", result.Mutations)
+	}
+	submits := submissionRequestIndexes(t, transport)
+	if len(submits) != 2 {
+		t.Fatalf("submission count = %d, want 2", len(submits))
+	}
+	for index, request := range transport.requests {
+		if index < submits[0] && request.method == http.MethodPost && request.form(t).Get("op") == "done" {
+			t.Fatal("Done was drafted before the first replies were published")
+		}
+	}
+}
+
+func TestBatchRejectsFirstReplyAndDoneWithoutSubmit(t *testing.T) {
+	reply, done := "reply", true
+	for _, dryRun := range []bool{false, true} {
+		inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+		service, transport := serviceWith(
+			conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		)
+		_, err := service.batch(batchManifest{
+			Revision: "D1",
+			Actions:  []batchManifestAction{{CommentID: 20, Reply: &reply, Done: &done}},
+		}, false, dryRun)
+		if err == nil || !strings.Contains(err.Error(), "#20") || !strings.Contains(err.Error(), "--submit") {
+			t.Fatalf("dryRun=%v: expected first-reply rejection, got %v", dryRun, err)
+		}
+		if len(transport.requests) != 1 {
+			t.Fatalf("dryRun=%v: made %d requests, want only the validation read", dryRun, len(transport.requests))
+		}
+	}
+}
+
+func TestBatchAllowsReplyAndDoneWithoutSubmitWhenParentHasReplies(t *testing.T) {
+	reply, done := "reply", true
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	service, _ := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline, publishedReply(90, 20)}, "cursor": map[string]any{"after": nil}}),
+	)
+	result, err := service.batch(batchManifest{
+		Revision: "D1",
+		Actions:  []batchManifestAction{{CommentID: 20, Reply: &reply, Done: &done}},
+	}, false, true)
+	if err != nil || result.TwoPhase || len(result.Mutations) != 2 {
+		t.Fatalf("unexpected result: %#v %v", result, err)
+	}
+}
+
+func TestBatchDryRunReportsTwoPhasePlan(t *testing.T) {
+	reply, done := "reply", true
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	service, _ := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+	)
+	result, err := service.batch(batchManifest{
+		Revision: "D1",
+		Actions:  []batchManifestAction{{CommentID: 20, Reply: &reply, Done: &done}},
+	}, true, true)
+	if err != nil || !result.TwoPhase || result.State != "planned" {
+		t.Fatalf("unexpected result: %#v %v", result, err)
+	}
+	if got := renderBatch(result); !strings.Contains(got, "two") {
+		t.Fatalf("text plan does not mention two submissions: %q", got)
+	}
+}
+
+func TestBatchFirstSubmissionFailureLeavesDoneUnattempted(t *testing.T) {
+	reply, done := "reply", true
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	service, transport := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"dialog": "An inline comment is still being edited."}}),
+	)
+	result, err := service.batch(batchManifest{
+		Revision: "D1",
+		Actions:  []batchManifestAction{{CommentID: 20, Reply: &reply, Done: &done}},
+	}, true, false)
+	if err == nil || result.State != "partial" || result.Failure == nil ||
+		result.Failure.Action != "submit" || len(result.Failure.NotAttemptedDone) != 1 ||
+		result.Failure.NotAttemptedDone[0] != 20 || result.ReplySubmission == nil ||
+		result.ReplySubmission.Submitted || len(result.Mutations) != 1 {
+		t.Fatalf("unexpected result: %#v %v", result, err)
+	}
+	for _, request := range transport.requests {
+		if request.method == http.MethodPost && request.form(t).Get("op") == "done" {
+			t.Fatal("Done was drafted after the reply submission failed")
+		}
+	}
+}
+
+func TestBatchDoneDraftFailureListsLaterDoneTargets(t *testing.T) {
+	reply, done := "reply", true
+	service, _ := serviceWith(
+		conduitResult(map[string]any{"data": []any{
+			transaction(1, "inline", 20, map[string]any{"isDone": false}),
+			transaction(2, "inline", 21, map[string]any{"isDone": false}),
+		}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 56}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 56}}}),
+		response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
+		errors.New("Done failed"),
+	)
+	result, err := service.batch(batchManifest{
+		Revision: "D1",
+		Actions: []batchManifestAction{
+			{CommentID: 20, Reply: &reply, Done: &done},
+			{CommentID: 21, Reply: &reply, Done: &done},
+		},
+	}, true, false)
+	if err == nil || result.Failure == nil || result.Failure.Action != "done" ||
+		len(result.Failure.NotAttemptedDone) != 1 || result.Failure.NotAttemptedDone[0] != 21 {
+		t.Fatalf("unexpected result: %#v %v", result.Failure, err)
+	}
+}
+
+func TestReplyDonePublishesFirstReplyBeforeDone(t *testing.T) {
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	service, transport := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
+		response(map[string]any{"payload": map[string]any{"isChecked": true, "draftState": true}}),
+		response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
+		conduitResult(map[string]any{"data": []any{
+			transaction(2, "inline", 20, map[string]any{"isDone": true}),
+		}, "cursor": map[string]any{"after": nil}}),
+	)
+	result, err := service.reply("D1", "20", "reply", true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != "reply+done" || !result.Published || result.ReplySubmission == nil ||
+		!result.ReplySubmission.Submitted || result.Submission == nil ||
+		!boolPointerValue(result.FinalDone) {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	submits := submissionRequestIndexes(t, transport)
+	if len(submits) != 2 || transport.requests[submits[0]+1].form(t).Get("op") != "done" {
+		t.Fatalf("expected reply submission, Done draft, then Done submission; submits at %v", submits)
+	}
+}
+
+func TestReplyDoneRejectsFirstReplyWithoutSubmit(t *testing.T) {
+	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
+	service, transport := serviceWith(
+		conduitResult(map[string]any{"data": []any{inline}, "cursor": map[string]any{"after": nil}}),
+	)
+	_, err := service.reply("D1", "20", "reply", true, false)
+	if err == nil || !strings.Contains(err.Error(), "--submit") || len(transport.requests) != 1 {
+		t.Fatalf("expected rejection before mutation, got %v after %d requests", err, len(transport.requests))
 	}
 }

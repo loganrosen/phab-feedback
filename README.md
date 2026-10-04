@@ -222,11 +222,26 @@ phab-feedback D123 done 456 457 --submit
 ```
 
 `reply --done` always creates and saves the reply draft before attempting the
-Done draft. With `--submit`, the CLI submits once only after both draft
-operations succeed. During that final submission, Phabricator publishes
-eligible inline drafts before applying their Done-state transition and commits
-the transaction set together. Draft preparation still requires separate web
-requests, so a failure before submission can leave unpublished drafts behind.
+Done draft. If the parent already has a published reply, `--submit` submits
+once after both draft operations succeed.
+
+Phabricator and Phorge drop the Done state when a comment's first reply and its
+Done draft are published in the same submission: publishing the reply re-saves
+the parent from a copy loaded before the Done transition. For a first reply,
+`reply --done` therefore requires `--submit` and publishes in two submissions.
+It drafts and submits the reply, then drafts Done and submits again. The first
+submission is reported as `reply_submission`. Without `--submit`, the command is
+rejected before any mutation because a later standalone `submit` would publish
+both drafts together.
+
+The first-reply check is best-effort. It looks for a published reply in the
+revision's transactions, not at the server's stored flag. A Done toggle or
+inline edit on the parent that races with its first reply's publication can
+reset that flag, so a later single submission can still lose Done. The
+post-submit Done verification reports that case.
+
+Draft preparation requires separate web requests, so a failure before
+submission can leave unpublished drafts behind.
 The command exits nonzero and its text or JSON output identifies any mutation
 whose remote state may need inspection. If a Done retry is interrupted, the
 output identifies whether the first confirmed toggle created a pending
@@ -325,20 +340,33 @@ phab-feedback batch actions.json --dry-run
 ```
 
 Without `--submit`, the command creates drafts in manifest order. With
-`--submit`, it creates every draft first and makes exactly one submission after
-all draft operations succeed:
+`--submit`, it creates every draft first and makes one submission after all
+draft operations succeed.
+
+When an action gives a comment both a reply and `done: true`, and that comment
+has no published reply yet, publishing both together would lose the Done state
+(see `reply --done` above). With `--submit`, the batch reports `two_phase: true`
+and publishes in two submissions. It drafts every reply and submits, recording
+that as `reply_submission`, then drafts every Done change and submits again.
+A batch without `--submit`, including a `--dry-run` without it, is rejected before any
+mutation. Either approve both submissions with `--submit`, or publish a
+reply-only batch first and a Done-only batch afterward. If the reply submission
+or a later Done draft fails, `failure.not_attempted_done` lists the Done targets
+that were never drafted.
 
 ```bash
 phab-feedback batch actions.json
 phab-feedback batch actions.json --submit --format json
 ```
 
-That final submission is not scoped to the manifest. It publishes every
+Each submission is not scoped to the manifest. It publishes every
 eligible pending inline draft owned by the current user on the revision,
 including pre-existing browser drafts.
 If every requested Done state is already published and the batch creates no
-new draft, the CLI does not attempt the final submission and reports
-`state: "unchanged"` rather than publishing unrelated drafts.
+new draft, the CLI does not attempt the Done submission and reports
+`state: "unchanged"` rather than publishing unrelated drafts. In a two-phase
+batch the replies were already published by then, so it reports
+`state: "published"` with only `reply_submission` set.
 
 Validation failures never mutate the revision. Phabricator applies the final
 published inline transactions together, but the preceding draft-creation calls
@@ -352,6 +380,14 @@ Phabricator can also return an HTTP-success dialog instead of accepting a
 submission. The CLI treats that as a partial failure, preserves the last
 confirmed draft state, and reports the dialog rather than claiming that the
 mutations were published.
+
+If Phabricator accepts a batch submission but a requested Done state is not
+visible afterward, the command exits nonzero with `state: "partial"` even if
+some replies were published. `submission.submitted` means only that
+Phabricator accepted the request; check `done_verification` and `recovery` for
+the unresolved targets. Inspect those comments before retrying: Done is a
+toggle, and any later submission still publishes every eligible pending draft
+you own on the revision.
 
 Queue listing, revision inspection, and `comment` use standard Conduit APIs.
 Inline reply drafting, top-level comment removal, Done drafting, and draft

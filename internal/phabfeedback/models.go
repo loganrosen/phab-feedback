@@ -222,6 +222,7 @@ type inlineReplyResult struct {
 	Published         bool              `json:"published"`
 	FinalDone         *bool             `json:"final_done,omitempty"`
 	Done              *commentAction    `json:"done,omitempty"`
+	ReplySubmission   *submissionResult `json:"reply_submission,omitempty"`
 	Submission        *submissionResult `json:"submission,omitempty"`
 }
 
@@ -307,18 +308,23 @@ type batchFailure struct {
 	MutationIndex      int    `json:"mutation_index,omitempty"`
 	Action             string `json:"action"`
 	CompletedMutations int    `json:"completed_mutations"`
+	NotAttemptedDone   []int  `json:"not_attempted_done,omitempty"`
 	Error              string `json:"error"`
 }
 
 type batchResult struct {
-	RevisionID int               `json:"revision_id"`
-	Action     string            `json:"action"`
-	DryRun     bool              `json:"dry_run"`
-	Submit     bool              `json:"submit"`
-	State      string            `json:"state"`
-	Mutations  []batchMutation   `json:"mutations"`
-	Submission *submissionResult `json:"submission,omitempty"`
-	Failure    *batchFailure     `json:"failure,omitempty"`
+	RevisionID int             `json:"revision_id"`
+	Action     string          `json:"action"`
+	DryRun     bool            `json:"dry_run"`
+	Submit     bool            `json:"submit"`
+	TwoPhase   bool            `json:"two_phase,omitempty"`
+	State      string          `json:"state"`
+	Mutations  []batchMutation `json:"mutations"`
+	// ReplySubmission publishes replies before Done drafts exist when a
+	// parent receives its first reply and Done in the same request.
+	ReplySubmission *submissionResult `json:"reply_submission,omitempty"`
+	Submission      *submissionResult `json:"submission,omitempty"`
+	Failure         *batchFailure     `json:"failure,omitempty"`
 }
 
 type replyExpectation struct {

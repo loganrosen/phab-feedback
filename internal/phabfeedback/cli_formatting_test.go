@@ -410,6 +410,23 @@ func TestReplyFailureTextIncludesSubmissionStatus(t *testing.T) {
 			want: "Created inline reply #56 to comment #34 on D12, but did not confirm its saved state.\n" +
 				"Submission was not attempted on D12: The reply draft was not created successfully.",
 		},
+		{
+			name: "done phase failed after reply submission",
+			result: inlineReplyResult{
+				RevisionID: 12, ParentCommentID: 34, CreatedReplyID: 56, Saved: true, Published: true,
+				Done: &commentAction{Recovery: "The Done draft could not be created."},
+				ReplySubmission: &submissionResult{
+					RevisionID: 12, Outcome: submissionOutcomeSubmitted, Submitted: true,
+				},
+				Submission: unattemptedSubmission(12, "The Done draft was not created."),
+			},
+			want: "Published inline reply #56 to comment #34 on D12.\n" +
+				"Done action for comment #34 requires recovery: The Done draft could not be created.\n" +
+				"Reply submission:\n" +
+				"Submitted every pending draft you own on D12.\n" +
+				"Done submission:\n" +
+				"Submission was not attempted on D12: The Done draft was not created.",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -433,6 +450,43 @@ func TestBatchSubmissionFailureTextIncludesOutcome(t *testing.T) {
 	}))
 	want := "Batch submission stopped after 2 completed mutations on D12.\n" +
 		"Submission was rejected on D12: An inline comment is still being edited."
+	if got != want {
+		t.Fatalf("text output = %q, want %q", got, want)
+	}
+}
+
+func TestBatchDraftFailureTextShowsPublishedRepliesAndUnattemptedDone(t *testing.T) {
+	got := ansi.Strip(renderBatch(batchResult{
+		RevisionID: 12,
+		State:      "partial",
+		Failure: &batchFailure{
+			ActionIndex: 2, MutationIndex: 3, Action: "done",
+			CompletedMutations: 2, NotAttemptedDone: []int{56},
+		},
+		ReplySubmission: &submissionResult{RevisionID: 12, Submitted: true},
+	}))
+	want := "Batch stopped at manifest action 2, mutation 3 (done), after 2 completed mutations on D12.\n" +
+		"Reply submission:\n" +
+		"Submitted every pending draft you own on D12.\n" +
+		"Done was not attempted for #56."
+	if got != want {
+		t.Fatalf("text output = %q, want %q", got, want)
+	}
+}
+
+func TestAcceptedSubmissionWithUnresolvedDoneShowsRecovery(t *testing.T) {
+	got := ansi.Strip(renderSubmission(submissionResult{
+		RevisionID: 12, Submitted: true,
+		DoneVerification: &verificationResult{
+			Status: "failed", Done: []doneVerification{
+				{CommentID: 34, Found: true, ConduitIsDone: false, State: "not-done"},
+			},
+		},
+		Recovery: "Done state is not visible for #34. Inspect each target before retrying; Done is a toggle and submission is revision-wide.",
+	}))
+	want := "Phabricator accepted the submission request on D12.\n" +
+		"Done state is not visible for #34 on D12.\n" +
+		"Recovery: Done state is not visible for #34. Inspect each target before retrying; Done is a toggle and submission is revision-wide."
 	if got != want {
 		t.Fatalf("text output = %q, want %q", got, want)
 	}

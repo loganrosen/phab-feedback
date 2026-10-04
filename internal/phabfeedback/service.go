@@ -521,6 +521,11 @@ func (s *feedbackService) reply(revision, parent, message string, done, submit b
 	if err != nil {
 		return inlineReplyResult{}, err
 	}
+	// Publishing a first reply and Done together loses the Done: https://we.phorge.it/T16847
+	firstReplyDone := done && !comments[0].HasReplies
+	if firstReplyDone && !submit {
+		return inlineReplyResult{}, firstReplyDoneError([]int{comments[0].ID})
+	}
 	result, err := s.draftInlineReplyValidated(revisionID, comments[0], message)
 	if err != nil {
 		if submit {
@@ -537,6 +542,26 @@ func (s *feedbackService) reply(revision, parent, message string, done, submit b
 		}
 		return result, err
 	}
+	if firstReplyDone {
+		replySubmission, submitErr := s.submit(revision)
+		result.ReplySubmission = &replySubmission
+		if replySubmission.Submitted {
+			result.Draft = false
+			result.Published = true
+		}
+		if submitErr == nil && !replySubmission.Submitted {
+			submitErr = fmt.Errorf("reply draft was created but Phabricator reported no publishable effect; inspect the revision")
+		}
+		if submitErr != nil {
+			return result, &mutationResultError{
+				result: result,
+				err: fmt.Errorf(
+					"remote partial failure: reply draft %d was created but its submission failed; parent Done action was not attempted: %w",
+					result.CreatedReplyID, submitErr,
+				),
+			}
+		}
+	}
 	if done {
 		result.Action = "reply+done"
 		doneResult, doneErr := s.markDoneValidated(revisionID, []validatedComment{comments[0]})
@@ -551,16 +576,23 @@ func (s *feedbackService) reply(revision, parent, message string, done, submit b
 					"The parent Done action failed.",
 				)
 			}
+			replyState := "drafted"
+			if result.Published {
+				replyState = "published"
+			}
 			return result, &mutationResultError{
 				result: result,
 				err: fmt.Errorf(
-					"remote partial failure: reply %d was drafted but comment %d was not marked Done: %w",
-					result.CreatedReplyID, comments[0].ID, doneErr,
+					"remote partial failure: reply %d was %s but comment %d was not marked Done: %w",
+					result.CreatedReplyID, replyState, comments[0].ID, doneErr,
 				),
 			}
 		}
 	}
 	if !submit {
+		return result, nil
+	}
+	if firstReplyDone && (result.Done == nil || !boolPointerValue(result.Done.Draft)) {
 		return result, nil
 	}
 	var submission submissionResult
@@ -937,6 +969,7 @@ func (s *feedbackService) submitAndVerifyDone(revision string, commentIDs []int)
 	verification, err := s.verify(revision, nil, targets)
 	if err != nil {
 		submission.DoneVerificationNote = "The submission was accepted, but the Done state could not be checked."
+		submission.Recovery = "Inspect the revision and each Done target before retrying; Done is a toggle and submission is revision-wide."
 		return submission, fmt.Errorf("submission was accepted, but Done outcome verification failed: %w", err)
 	}
 	submission.DoneVerification = &verification
@@ -947,6 +980,10 @@ func (s *feedbackService) submitAndVerifyDone(revision string, commentIDs []int)
 				unresolved = append(unresolved, fmt.Sprintf("#%d", state.CommentID))
 			}
 		}
+		submission.Recovery = fmt.Sprintf(
+			"Done state is not visible for %s. Inspect each target before retrying; Done is a toggle and submission is revision-wide.",
+			strings.Join(unresolved, ", "),
+		)
 		return submission, fmt.Errorf(
 			"submission was accepted, but Done state is not visible for %s",
 			strings.Join(unresolved, ", "),
@@ -1035,6 +1072,10 @@ func (s *feedbackService) validateComments(revision string, values []string, exp
 type validatedComment struct {
 	ID      int
 	Comment map[string]any
+	// HasReplies reports whether any published inline names this comment as
+	// its parent. Phabricator loses a Done state published with a parent's
+	// first reply, so callers must not publish both in one submission.
+	HasReplies bool
 }
 
 func (s *feedbackService) validateInlineComments(revision string, values []string) ([]validatedComment, error) {
@@ -1063,7 +1104,16 @@ func (s *feedbackService) validateCommentRecords(revision string, values []strin
 		return nil, err
 	}
 	byID := map[int]map[string]any{}
+	repliedPHIDs := map[string]bool{}
 	for _, transaction := range transactions {
+		// A published reply with this parent PHID means the server set the
+		// parent's hasReplies flag, which avoids T16847. Removed replies lose the
+		// link, so they don't count; that only costs an extra submission.
+		if fields, ok := mapValue(transaction["fields"]); ok {
+			if parent := stringValue(fields["replyToCommentPHID"]); parent != "" {
+				repliedPHIDs[parent] = true
+			}
+		}
 		versions, _ := sliceValue(transaction["comments"])
 		for _, raw := range versions {
 			version, _ := raw.(map[string]any)
@@ -1093,7 +1143,10 @@ func (s *feedbackService) validateCommentRecords(revision string, values []strin
 		if expectedType == "inline" && stringValue(comment["phid"]) == "" {
 			return nil, fmt.Errorf("inline comment %d has no PHID", identifier)
 		}
-		result = append(result, validatedComment{ID: identifier, Comment: comment})
+		result = append(result, validatedComment{
+			ID: identifier, Comment: comment,
+			HasReplies: repliedPHIDs[stringValue(comment["phid"])],
+		})
 	}
 	return result, nil
 }
