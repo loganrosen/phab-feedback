@@ -1106,6 +1106,8 @@ func (s *feedbackService) validateCommentRecords(revision string, values []strin
 	byID := map[int]map[string]any{}
 	repliedPHIDs := map[string]bool{}
 	for _, transaction := range transactions {
+		// Removed replies count too: Phabricator never clears the parent's
+		// hasReplies flag, and that flag is what avoids T16847.
 		if fields, ok := mapValue(transaction["fields"]); ok {
 			if parent := stringValue(fields["replyToCommentPHID"]); parent != "" {
 				repliedPHIDs[parent] = true
