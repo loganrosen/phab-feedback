@@ -234,6 +234,12 @@ submission is reported as `reply_submission`. Without `--submit`, the command is
 rejected before any mutation because a later standalone `submit` would publish
 both drafts together.
 
+The first-reply check is best-effort. It looks for a published reply in the
+revision's transactions, not at the server's stored flag. A Done toggle or
+inline edit on the parent that races with its first reply's publication can
+reset that flag, so a later single submission can still lose Done. The
+post-submit Done verification reports that case.
+
 Draft preparation requires separate web requests, so a failure before
 submission can leave unpublished drafts behind.
 The command exits nonzero and its text or JSON output identifies any mutation
