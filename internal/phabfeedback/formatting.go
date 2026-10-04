@@ -133,9 +133,15 @@ func renderInlineReply(result inlineReplyResult) string {
 			}
 		}
 	}
-	if result.Submission != nil {
+	switch {
+	case result.ReplySubmission != nil && result.Submission != nil:
+		lines = append(lines,
+			detailStyle.Render("Reply submission:"), renderSubmission(*result.ReplySubmission),
+			detailStyle.Render("Done submission:"), renderSubmission(*result.Submission),
+		)
+	case result.Submission != nil:
 		lines = append(lines, renderSubmission(*result.Submission))
-	} else if result.ReplySubmission != nil {
+	case result.ReplySubmission != nil:
 		lines = append(lines, renderSubmission(*result.ReplySubmission))
 	}
 	return strings.Join(lines, "\n")

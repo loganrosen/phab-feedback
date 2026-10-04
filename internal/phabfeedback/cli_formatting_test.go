@@ -410,6 +410,23 @@ func TestReplyFailureTextIncludesSubmissionStatus(t *testing.T) {
 			want: "Created inline reply #56 to comment #34 on D12, but did not confirm its saved state.\n" +
 				"Submission was not attempted on D12: The reply draft was not created successfully.",
 		},
+		{
+			name: "done phase failed after reply submission",
+			result: inlineReplyResult{
+				RevisionID: 12, ParentCommentID: 34, CreatedReplyID: 56, Saved: true, Published: true,
+				Done: &commentAction{Recovery: "The Done draft could not be created."},
+				ReplySubmission: &submissionResult{
+					RevisionID: 12, Outcome: submissionOutcomeSubmitted, Submitted: true,
+				},
+				Submission: unattemptedSubmission(12, "The Done draft was not created."),
+			},
+			want: "Published inline reply #56 to comment #34 on D12.\n" +
+				"Done action for comment #34 requires recovery: The Done draft could not be created.\n" +
+				"Reply submission:\n" +
+				"Submitted every pending draft you own on D12.\n" +
+				"Done submission:\n" +
+				"Submission was not attempted on D12: The Done draft was not created.",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
