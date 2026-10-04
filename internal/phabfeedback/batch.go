@@ -141,7 +141,13 @@ func (s *feedbackService) batch(manifest batchManifest, submit, dryRun bool) (ba
 		}
 		if err := draftPlanned(func(mutation batchMutation) bool { return mutation.Action == "done" }); err != nil {
 			last := result.Mutations[len(result.Mutations)-1]
-			return failedBatch(result, last.ActionIndex, last.MutationIndex, last.Action, completedMutations, nil, err)
+			var remainingDone []int
+			for _, mutation := range planned {
+				if mutation.Action == "done" && mutation.MutationIndex > last.MutationIndex {
+					remainingDone = append(remainingDone, mutation.CommentID)
+				}
+			}
+			return failedBatch(result, last.ActionIndex, last.MutationIndex, last.Action, completedMutations, remainingDone, err)
 		}
 		sortBatchMutations(result.Mutations)
 	}

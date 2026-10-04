@@ -899,6 +899,34 @@ func TestBatchFirstSubmissionFailureLeavesDoneUnattempted(t *testing.T) {
 	}
 }
 
+func TestBatchDoneDraftFailureListsLaterDoneTargets(t *testing.T) {
+	reply, done := "reply", true
+	service, _ := serviceWith(
+		conduitResult(map[string]any{"data": []any{
+			transaction(1, "inline", 20, map[string]any{"isDone": false}),
+			transaction(2, "inline", 21, map[string]any{"isDone": false}),
+		}, "cursor": map[string]any{"after": nil}}),
+		response([]byte(`<input name="__csrf__" value="B@csrf123">`)),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 55}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 56}}}),
+		response(map[string]any{"payload": map[string]any{"inline": map[string]any{"id": 56}}}),
+		response(map[string]any{"payload": map[string]any{"redirect": "/D1"}}),
+		errors.New("Done failed"),
+	)
+	result, err := service.batch(batchManifest{
+		Revision: "D1",
+		Actions: []batchManifestAction{
+			{CommentID: 20, Reply: &reply, Done: &done},
+			{CommentID: 21, Reply: &reply, Done: &done},
+		},
+	}, true, false)
+	if err == nil || result.Failure == nil || result.Failure.Action != "done" ||
+		len(result.Failure.NotAttemptedDone) != 1 || result.Failure.NotAttemptedDone[0] != 21 {
+		t.Fatalf("unexpected result: %#v %v", result.Failure, err)
+	}
+}
+
 func TestReplyDonePublishesFirstReplyBeforeDone(t *testing.T) {
 	inline := transaction(1, "inline", 20, map[string]any{"isDone": false})
 	service, transport := serviceWith(

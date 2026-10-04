@@ -345,8 +345,8 @@ that as `reply_submission`, then drafts every Done change and submits again.
 A batch without `--submit`, including a `--dry-run` without it, is rejected before any
 mutation. Either approve both submissions with `--submit`, or publish a
 reply-only batch first and a Done-only batch afterward. If the reply submission
-fails, `failure.not_attempted_done` lists the Done targets that were never
-drafted.
+or a later Done draft fails, `failure.not_attempted_done` lists the Done targets
+that were never drafted.
 
 ```bash
 phab-feedback batch actions.json
