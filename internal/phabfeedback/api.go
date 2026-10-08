@@ -42,7 +42,7 @@ func (c *conduitClient) call(method string, params map[string]any, result any) e
 		"output":      {"json"},
 		"__conduit__": {"1"},
 	}
-	body, err := c.transport.Request(
+	response, err := c.transport.Request(
 		http.MethodPost,
 		c.host+"/api/"+method,
 		http.Header{"Content-Type": {"application/x-www-form-urlencoded"}},
@@ -51,8 +51,11 @@ func (c *conduitClient) call(method string, params map[string]any, result any) e
 	if err != nil {
 		return err
 	}
+	if _, isHTML := htmlResponseDetails(response); isHTML {
+		return htmlResponseError(c.host+"/api/"+method, response, "a Conduit response")
+	}
 	var envelope conduitEnvelope
-	if err := decodeJSON(body, "Conduit method "+method, &envelope); err != nil {
+	if err := decodeJSON(response.Body, "Conduit method "+method, &envelope); err != nil {
 		return err
 	}
 	if envelope.ErrorCode != nil && *envelope.ErrorCode != "" {
@@ -151,10 +154,11 @@ func (w *webClient) csrf() (string, error) {
 	if w.csrfToken != "" {
 		return w.csrfToken, nil
 	}
-	body, err := w.transport.Request(http.MethodGet, w.host, http.Header{"Cookie": {w.cookie}}, nil)
+	response, err := w.transport.Request(http.MethodGet, w.host, http.Header{"Cookie": {w.cookie}}, nil)
 	if err != nil {
 		return "", err
 	}
+	body := response.Body
 	w.homepageLoaded = true
 	lowerBody := bytes.ToLower(body)
 	w.authenticated = bytes.Contains(lowerBody, []byte("/logout/")) ||
@@ -167,6 +171,9 @@ func (w *webClient) csrf() (string, error) {
 			w.csrfToken = match[1]
 			return w.csrfToken, nil
 		}
+	}
+	if title, isHTML := htmlResponseDetails(response); isHTML && title != "" {
+		return "", fmt.Errorf("could not extract a CSRF token from the host (page title: %q)", title)
 	}
 	return "", fmt.Errorf("could not extract a CSRF token from the host")
 }
@@ -188,7 +195,7 @@ func (w *webClient) post(path string, values map[string]string) (map[string]any,
 	for key, value := range values {
 		form.Set(key, value)
 	}
-	body, err := w.transport.Request(
+	response, err := w.transport.Request(
 		http.MethodPost,
 		w.host+path,
 		http.Header{
@@ -201,6 +208,10 @@ func (w *webClient) post(path string, values map[string]string) (map[string]any,
 	if err != nil {
 		return nil, err
 	}
+	if _, isHTML := htmlResponseDetails(response); isHTML {
+		return nil, htmlResponseError(w.host+path, response, "a JSON web response")
+	}
+	body := response.Body
 	body = bytes.TrimPrefix(body, []byte("for (;;);"))
 	payload, err := jsonObject(body, "Web endpoint "+path)
 	if err != nil {
