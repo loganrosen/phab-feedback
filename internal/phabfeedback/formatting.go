@@ -16,6 +16,7 @@ var (
 	detailStyle  = lipgloss.NewStyle().Foreground(lipgloss.BrightBlack)
 	linkStyle    = lipgloss.NewStyle().Foreground(lipgloss.BrightBlue).Underline(true)
 	successStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.BrightGreen)
+	errorStyle   = lipgloss.NewStyle().Foreground(lipgloss.BrightRed)
 )
 
 func renderText(command string, result any) (string, error) {
@@ -23,6 +24,9 @@ func renderText(command string, result any) (string, error) {
 	case "list":
 		value, err := typedResult[revisionListResult](result, command)
 		return revisionList(value), err
+	case "list-hosts":
+		value, err := typedResult[multiHostListResult](result, command)
+		return multiHostRevisionList(value), err
 	case "overview":
 		value, err := typedResult[overviewResult](result, command)
 		return renderOverview(value), err
@@ -339,6 +343,19 @@ func revisionList(result revisionListResult) string {
 		lines = append(lines, "", labelStyle.Render("Next cursor  ")+safe(result.Cursor["after"]))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func multiHostRevisionList(result multiHostListResult) string {
+	sections := make([]string, 0, len(result.Hosts))
+	for _, entry := range result.Hosts {
+		header := headerStyle.Render(safe(entry.Host))
+		if entry.Error != "" || entry.Result == nil {
+			sections = append(sections, header+"\n"+errorStyle.Render("error: "+safe(entry.Error)))
+			continue
+		}
+		sections = append(sections, header+"\n"+revisionList(*entry.Result))
+	}
+	return strings.Join(sections, "\n\n")
 }
 
 func revisionSummaryText(result revisionSummary) string {

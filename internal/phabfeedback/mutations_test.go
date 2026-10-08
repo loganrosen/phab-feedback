@@ -7,9 +7,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestReplyDoneAndSubmissionPayloads(t *testing.T) {
@@ -664,5 +667,80 @@ func TestDoctorReturnsFailureWithoutPrintingAnExtraError(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"ok": false`) {
 		t.Fatalf("doctor did not emit diagnostics: %q", stdout.String())
+	}
+}
+
+func TestListQueriesEveryArcrcHostWhenAmbiguous(t *testing.T) {
+	home := isolateCredentialFiles(t)
+	newServer := func(user string) *httptest.Server {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			switch request.URL.Path {
+			case "/api/user.whoami":
+				_, _ = writer.Write(conduitResult(map[string]any{"phid": "PHID-USER-" + user, "userName": user}))
+			case "/api/differential.revision.search":
+				_, _ = writer.Write(conduitResult(map[string]any{"data": []any{}, "cursor": map[string]any{}}))
+			default:
+				http.NotFound(writer, request)
+			}
+		}))
+		t.Cleanup(server.Close)
+		return server
+	}
+	first, second := newServer("first"), newServer("second")
+	arcrc := filepath.Join(home, ".arcrc")
+	payload, err := json.Marshal(map[string]any{"hosts": map[string]any{
+		first.URL + "/api/":           map[string]string{"token": "first-token"},
+		second.URL + "/api/":          map[string]string{"token": "second-token"},
+		"https://broken.invalid/api/": map[string]string{},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(arcrc, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PHAB_FEEDBACK_ARCRC", arcrc)
+	t.Setenv("PHAB_FEEDBACK_HOST", "")
+	t.Setenv("PHAB_FEEDBACK_TOKEN", "")
+
+	var stdout, stderr bytes.Buffer
+	status := Run([]string{"list", "--format", "json"}, strings.NewReader(""), &stdout, &stderr)
+	if status != 1 || stderr.Len() != 0 {
+		t.Fatalf("status=%d stderr=%q", status, stderr.String())
+	}
+	var result multiHostListResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	users := map[string]string{}
+	for _, entry := range result.Hosts {
+		if entry.Result != nil {
+			users[entry.Host] = entry.Result.Viewer.Username
+		} else if entry.Host != "https://broken.invalid" || !strings.Contains(entry.Error, "no Conduit token") {
+			t.Fatalf("unexpected host entry: %+v", entry)
+		}
+	}
+	if len(result.Hosts) != 3 || users[first.URL] != "first" || users[second.URL] != "second" {
+		t.Fatalf("unexpected hosts: %+v", result.Hosts)
+	}
+
+	stdout.Reset()
+	if status := Run([]string{"list"}, strings.NewReader(""), &stdout, &stderr); status != 1 || stderr.Len() != 0 {
+		t.Fatalf("text status=%d stderr=%q", status, stderr.String())
+	}
+	text := ansi.Strip(stdout.String())
+	for _, expected := range []string{
+		first.URL + "\n0 revisions (responsible, open)",
+		second.URL + "\n0 revisions (responsible, open)",
+		"https://broken.invalid\nerror: no Conduit token found for https://broken.invalid",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("text output missing %q:\n%s", expected, text)
+		}
+	}
+
+	stdout.Reset()
+	if status := Run([]string{"list", "--after", "cursor"}, strings.NewReader(""), &stdout, &stderr); status != 1 || !strings.Contains(stderr.String(), "--after cursors belong to a single host") {
+		t.Fatalf("after status=%d stderr=%q", status, stderr.String())
 	}
 }

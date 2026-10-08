@@ -67,7 +67,18 @@ Select a host with the global `--host` option, `PHAB_FEEDBACK_HOST`, or
 ```
 
 If none is set and `~/.arcrc` contains exactly one host, that host is used.
+With several `.arcrc` hosts and none selected, `list` (and bare
+`phab-feedback`) queries every host and groups the results by host; the command
+exits non-zero if any host fails. In this mode `--format json` wraps the output
+as `{"hosts": [{"host": ..., "result": {...}}, {"host": ..., "error": "..."}]}`,
+where `result` is the single-host list payload. `--after` cursors are
+host-specific, so they need `--host`. When `PHAB_FEEDBACK_TOKEN` is set, a host
+must be selected because that token can't be sent to every host. Revision
+commands still need a single host and print the available hosts when one isn't
+selected.
 Conduit tokens come from `PHAB_FEEDBACK_TOKEN` or the matching `.arcrc` entry.
+`.arcrc` aliases of the same host (such as `https://x/api/` and `https://x`)
+count as one host, but must not have different tokens.
 Tokens are not accepted as command-line arguments.
 
 Browser-only actions also need a logged-in web session. Set
