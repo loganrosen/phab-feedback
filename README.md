@@ -73,6 +73,8 @@ exits non-zero if any host fails. `--after` cursors are host-specific, so they
 need `--host`. Revision commands still need a single host and print the
 available hosts when one isn't selected.
 Conduit tokens come from `PHAB_FEEDBACK_TOKEN` or the matching `.arcrc` entry.
+`.arcrc` aliases of the same host (such as `https://x/api/` and `https://x`)
+count as one host, but must not have different tokens.
 Tokens are not accepted as command-line arguments.
 
 Browser-only actions also need a logged-in web session. Set

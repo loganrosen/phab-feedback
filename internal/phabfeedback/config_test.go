@@ -248,3 +248,73 @@ func TestAmbiguousHostErrorListsNormalizedHosts(t *testing.T) {
 		t.Fatalf("duplicate host entries were not merged: %+v %v", got, err)
 	}
 }
+
+func TestResolveTokenRejectsConflictingAliases(t *testing.T) {
+	home := isolateCredentialFiles(t)
+	arcrc := filepath.Join(home, ".arcrc")
+	t.Setenv("PHAB_FEEDBACK_ARCRC", arcrc)
+	t.Setenv("PHAB_FEEDBACK_HOST", "")
+	t.Setenv("PHAB_FEEDBACK_TOKEN", "")
+	write := func(payload string) {
+		t.Helper()
+		if err := os.WriteFile(arcrc, []byte(payload), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"hosts": {
+		"https://a.example/api/": {"token": "same"},
+		"https://a.example": {"token": "same"},
+		"https://a.example/": {"token": ""}
+	}}`)
+	got, err := resolveCredentials(t.Context(), credentialOptions{requireToken: true})
+	if err != nil || got.token != "same" {
+		t.Fatalf("identical duplicate tokens were rejected: %+v %v", got, err)
+	}
+	write(`{"hosts": {
+		"https://a.example/api/": {"token": "stale"},
+		"https://a.example": {"token": "current"}
+	}}`)
+	for range 10 {
+		_, err = resolveCredentials(t.Context(), credentialOptions{requireToken: true})
+		if err == nil || !strings.Contains(err.Error(), "conflicting Conduit tokens for https://a.example") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	t.Setenv("PHAB_FEEDBACK_TOKEN", "override")
+	if got, err := resolveCredentials(t.Context(), credentialOptions{requireToken: true}); err != nil || got.token != "override" {
+		t.Fatalf("PHAB_FEEDBACK_TOKEN did not take precedence: %+v %v", got, err)
+	}
+}
+
+func TestAmbiguousHostErrorShowsResolvedConfigPath(t *testing.T) {
+	home := isolateCredentialFiles(t)
+	arcrc := filepath.Join(home, ".arcrc")
+	t.Setenv("PHAB_FEEDBACK_ARCRC", arcrc)
+	t.Setenv("PHAB_FEEDBACK_HOST", "")
+	if err := os.WriteFile(arcrc, []byte(`{"hosts": {
+		"https://a.example": {"token": "a"},
+		"https://b.example": {"token": "b"}
+	}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	explicit := filepath.Join(home, "custom.json")
+	if err := os.WriteFile(explicit, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, xdg, configPath, want string
+	}{
+		{"default", filepath.Join(home, ".config"), "", filepath.Join("~", ".config", "phab-feedback", "config.json")},
+		{"xdg", outside, "", filepath.Join(outside, "phab-feedback", "config.json")},
+		{"explicit", outside, "~/custom.json", filepath.Join("~", "custom.json")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", test.xdg)
+			_, err := resolveCredentials(t.Context(), credentialOptions{configPath: test.configPath})
+			if err == nil || !strings.Contains(err.Error(), `"host" in `+test.want+":") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}

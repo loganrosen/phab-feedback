@@ -51,7 +51,7 @@ func resolveCredentials(ctx context.Context, options credentialOptions) (credent
 	if err != nil {
 		return credentials{}, fmt.Errorf("could not determine home directory")
 	}
-	config, err := readConfig(options.configPath, home)
+	config, configPath, err := readConfig(options.configPath, home)
 	if err != nil {
 		return credentials{}, err
 	}
@@ -59,7 +59,7 @@ func resolveCredentials(ctx context.Context, options credentialOptions) (credent
 	if err != nil {
 		return credentials{}, err
 	}
-	host, err := resolveHost(options.host, config, arcrc)
+	host, err := resolveHost(options.host, config, arcrc, displayPath(configPath, home))
 	if err != nil {
 		return credentials{}, err
 	}
@@ -79,13 +79,22 @@ func resolveCredentials(ctx context.Context, options credentialOptions) (credent
 	return result, nil
 }
 
-func readConfig(path, home string) (configFile, error) {
+func readConfig(path, home string) (configFile, string, error) {
 	explicit := path != ""
 	if path == "" {
 		root := envOr("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 		path = filepath.Join(root, "phab-feedback", "config.json")
 	}
-	return readJSONFile[configFile](expandHome(path, home), !explicit, "config file")
+	path = expandHome(path, home)
+	config, err := readJSONFile[configFile](path, !explicit, "config file")
+	return config, path, err
+}
+
+func displayPath(path, home string) string {
+	if relative, err := filepath.Rel(home, path); err == nil && filepath.IsAbs(path) && relative != "." && !strings.HasPrefix(relative, "..") {
+		return filepath.Join("~", relative)
+	}
+	return path
 }
 
 //nolint:gosec // Configuration paths are intentionally user-selectable.
@@ -108,7 +117,7 @@ func readJSONFile[T any](path string, missingOK bool, label string) (T, error) {
 	return payload, nil
 }
 
-func resolveHost(cliHost string, config configFile, arcrc arcConfig) (string, error) {
+func resolveHost(cliHost string, config configFile, arcrc arcConfig, configPath string) (string, error) {
 	configured := cliHost
 	if configured == "" {
 		configured = os.Getenv("PHAB_FEEDBACK_HOST")
@@ -126,7 +135,7 @@ func resolveHost(cliHost string, config configFile, arcrc arcConfig) (string, er
 	if len(available) == 0 {
 		return "", fmt.Errorf("no Phabricator host configured; use --host, PHAB_FEEDBACK_HOST, or the config file")
 	}
-	return "", &ambiguousHostError{hosts: available}
+	return "", &ambiguousHostError{hosts: available, configPath: configPath}
 }
 
 // arcrcHosts returns the distinct .arcrc hosts, normalized where possible.
@@ -148,11 +157,12 @@ func arcrcHosts(arcrc arcConfig) []string {
 }
 
 type ambiguousHostError struct {
-	hosts []string
+	hosts      []string
+	configPath string
 }
 
 func (e *ambiguousHostError) Error() string {
-	lines := []string{"multiple .arcrc hosts found; select one with --host, PHAB_FEEDBACK_HOST, or \"host\" in ~/.config/phab-feedback/config.json:"}
+	lines := []string{"multiple .arcrc hosts found; select one with --host, PHAB_FEEDBACK_HOST, or \"host\" in " + e.configPath + ":"}
 	for _, host := range e.hosts {
 		lines = append(lines, "  "+host)
 	}
@@ -176,16 +186,21 @@ func resolveToken(host string, arcrc arcConfig) (string, error) {
 	if token := os.Getenv("PHAB_FEEDBACK_TOKEN"); token != "" {
 		return token, nil
 	}
+	token := ""
 	for candidate, settings := range arcrc.Hosts {
 		normalized, err := normalizeHost(candidate)
-		if err != nil || normalized != host {
+		if err != nil || normalized != host || settings.Token == "" {
 			continue
 		}
-		if settings.Token != "" {
-			return settings.Token, nil
+		if token != "" && token != settings.Token {
+			return "", fmt.Errorf("conflicting Conduit tokens for %s in .arcrc; remove the stale entry or set PHAB_FEEDBACK_TOKEN", host)
 		}
+		token = settings.Token
 	}
-	return "", fmt.Errorf("no Conduit token found for %s; configure .arcrc or PHAB_FEEDBACK_TOKEN", host)
+	if token == "" {
+		return "", fmt.Errorf("no Conduit token found for %s; configure .arcrc or PHAB_FEEDBACK_TOKEN", host)
+	}
+	return token, nil
 }
 
 func resolveCookie(ctx context.Context, host string, config configFile, options credentialOptions, home string) (string, error) {
