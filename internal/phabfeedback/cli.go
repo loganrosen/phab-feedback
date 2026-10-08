@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/lipgloss/v2"
@@ -71,9 +72,7 @@ func newRootCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) *c
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(command *cobra.Command, _ []string) error {
-			return options.execute(command.Context(), "list", true, false, func(service *feedbackService) (any, error) {
-				return service.listRevisions(defaultListRole, defaultListStatus, nil, defaultListLimit, "")
-			})
+			return options.list(command.Context(), defaultListRole, defaultListStatus, nil, defaultListLimit, "")
 		},
 	}
 	root.SetIn(stdin)
@@ -347,9 +346,7 @@ func newListCommand(app *appOptions) *cobra.Command {
 				}
 				modified = &value
 			}
-			return app.execute(command.Context(), "list", true, false, func(service *feedbackService) (any, error) {
-				return service.listRevisions(role, status, modified, limit, after)
-			})
+			return app.list(command.Context(), role, status, modified, limit, after)
 		},
 	}
 	command.Flags().StringVar(&role, "role", defaultListRole, "Relationship to listed revisions: responsible, authored, or reviewing")
@@ -618,6 +615,20 @@ func (app *appOptions) execute(
 	if err != nil {
 		return err
 	}
+	result, err := action(newFeedbackService(ctx, credentials, requireToken, requireCookie))
+	if err != nil {
+		var resultError interface{ commandResult() any }
+		if errors.As(err, &resultError) {
+			if outputErr := app.outputResult(command, resultError.commandResult()); outputErr != nil {
+				return outputErr
+			}
+		}
+		return err
+	}
+	return app.outputResult(command, result)
+}
+
+func newFeedbackService(ctx context.Context, credentials credentials, requireToken, requireCookie bool) *feedbackService {
 	client := httpTransport{client: defaultHTTPClient()}
 	requests := transportFunc(func(
 		method, target string,
@@ -633,17 +644,54 @@ func (app *appOptions) execute(
 	if requireCookie {
 		service.web = &webClient{host: credentials.host, cookie: credentials.cookie, transport: requests}
 	}
-	result, err := action(service)
-	if err != nil {
-		var resultError interface{ commandResult() any }
-		if errors.As(err, &resultError) {
-			if outputErr := app.outputResult(command, resultError.commandResult()); outputErr != nil {
-				return outputErr
+	return service
+}
+
+// list queries every .arcrc host when no host is selected and several are available.
+func (app *appOptions) list(ctx context.Context, role, status string, modifiedAfter *int64, limit int, after string) error {
+	run := func(service *feedbackService) (any, error) {
+		return service.listRevisions(role, status, modifiedAfter, limit, after)
+	}
+	options := credentialOptions{host: app.host, configPath: app.config}
+	_, err := resolveCredentials(ctx, options)
+	ambiguous, ok := errors.AsType[*ambiguousHostError](err)
+	if !ok || os.Getenv("PHAB_FEEDBACK_TOKEN") != "" {
+		return app.execute(ctx, "list", true, false, run)
+	}
+	if after != "" {
+		return fmt.Errorf("--after cursors belong to a single host; select one with --host")
+	}
+	options.requireToken = true
+	result := multiHostListResult{Hosts: make([]hostListResult, len(ambiguous.hosts))}
+	var wait sync.WaitGroup
+	for index, host := range ambiguous.hosts {
+		result.Hosts[index].Host = host
+		wait.Go(func() {
+			entry := &result.Hosts[index]
+			hostOptions := options
+			hostOptions.host = host
+			credentials, err := resolveCredentials(ctx, hostOptions)
+			if err == nil {
+				var listed revisionListResult
+				listed, err = newFeedbackService(ctx, credentials, true, false).listRevisions(role, status, modifiedAfter, limit, after)
+				entry.Result = &listed
 			}
-		}
+			if err != nil {
+				entry.Result = nil
+				entry.Error = err.Error()
+			}
+		})
+	}
+	wait.Wait()
+	if err := app.outputResult("list-hosts", result); err != nil {
 		return err
 	}
-	return app.outputResult(command, result)
+	for _, entry := range result.Hosts {
+		if entry.Error != "" {
+			return &commandStatusError{}
+		}
+	}
+	return nil
 }
 
 func (app *appOptions) outputResult(command string, result any) error {

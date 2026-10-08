@@ -86,6 +86,16 @@ type revisionListResult struct {
 	Revisions     []revisionRecord `json:"revisions"`
 }
 
+type multiHostListResult struct {
+	Hosts []hostListResult `json:"hosts"`
+}
+
+type hostListResult struct {
+	Host   string              `json:"host"`
+	Error  string              `json:"error,omitempty"`
+	Result *revisionListResult `json:"result,omitempty"`
+}
+
 type diffInfo struct {
 	ID      any `json:"id"`
 	PHID    any `json:"phid"`

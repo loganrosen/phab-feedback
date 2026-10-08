@@ -119,18 +119,44 @@ func resolveHost(cliHost string, config configFile, arcrc arcConfig) (string, er
 	if configured != "" {
 		return normalizeHost(configured)
 	}
-	var available []string
-	for candidate := range arcrc.Hosts {
-		available = append(available, candidate)
-	}
-	sort.Strings(available)
+	available := arcrcHosts(arcrc)
 	if len(available) == 1 {
 		return normalizeHost(available[0])
 	}
 	if len(available) == 0 {
 		return "", fmt.Errorf("no Phabricator host configured; use --host, PHAB_FEEDBACK_HOST, or the config file")
 	}
-	return "", fmt.Errorf("multiple .arcrc hosts found; select one with --host or PHAB_FEEDBACK_HOST")
+	return "", &ambiguousHostError{hosts: available}
+}
+
+// arcrcHosts returns the distinct .arcrc hosts, normalized where possible.
+func arcrcHosts(arcrc arcConfig) []string {
+	seen := map[string]bool{}
+	var hosts []string
+	for candidate := range arcrc.Hosts {
+		host := candidate
+		if normalized, err := normalizeHost(candidate); err == nil {
+			host = normalized
+		}
+		if !seen[host] {
+			seen[host] = true
+			hosts = append(hosts, host)
+		}
+	}
+	sort.Strings(hosts)
+	return hosts
+}
+
+type ambiguousHostError struct {
+	hosts []string
+}
+
+func (e *ambiguousHostError) Error() string {
+	lines := []string{"multiple .arcrc hosts found; select one with --host, PHAB_FEEDBACK_HOST, or \"host\" in ~/.config/phab-feedback/config.json:"}
+	for _, host := range e.hosts {
+		lines = append(lines, "  "+host)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func normalizeHost(host string) (string, error) {

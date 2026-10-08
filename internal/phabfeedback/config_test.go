@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -217,5 +218,33 @@ func writeFirefoxCookie(t *testing.T, profile, value string) {
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAmbiguousHostErrorListsNormalizedHosts(t *testing.T) {
+	home := isolateCredentialFiles(t)
+	arcrc := filepath.Join(home, ".arcrc")
+	t.Setenv("PHAB_FEEDBACK_ARCRC", arcrc)
+	t.Setenv("PHAB_FEEDBACK_HOST", "")
+	if err := os.WriteFile(arcrc, []byte(`{"hosts": {
+		"https://b.example/api/": {"token": "b"},
+		"https://a.example/api/": {"token": "a"},
+		"https://a.example": {"token": "a"}
+	}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := resolveCredentials(t.Context(), credentialOptions{})
+	if err == nil || !strings.Contains(err.Error(), "\n  https://a.example\n  https://b.example") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := os.WriteFile(arcrc, []byte(`{"hosts": {
+		"https://a.example/api/": {"token": "a"},
+		"https://a.example": {"token": "a"}
+	}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveCredentials(t.Context(), credentialOptions{})
+	if err != nil || got.host != "https://a.example" {
+		t.Fatalf("duplicate host entries were not merged: %+v %v", got, err)
 	}
 }
