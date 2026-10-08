@@ -203,8 +203,13 @@ func TestWebCSRFErrorIncludesHTMLTitle(t *testing.T) {
 	})
 	client := webClient{host: "https://phab.example", cookie: "phsid=cookie", transport: requests}
 	_, err := client.csrf()
-	if err == nil || !strings.Contains(err.Error(), `page title: "Making sure you're not a bot!"`) {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, want := range []string{"HTTP 200", `page title: "Making sure you're not a bot!"`, "bot-protection challenge"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err, want)
+		}
 	}
 }
 

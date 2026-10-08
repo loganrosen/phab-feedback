@@ -3,6 +3,7 @@ package phabfeedback
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -172,10 +173,16 @@ func (w *webClient) csrf() (string, error) {
 			return w.csrfToken, nil
 		}
 	}
-	if title, isHTML := htmlResponseDetails(response); isHTML && title != "" {
-		return "", fmt.Errorf("could not extract a CSRF token from the host (page title: %q)", title)
+	message := fmt.Sprintf("could not extract a CSRF token from %s (HTTP %d", safeLocation(w.host), response.StatusCode)
+	title, isHTML := htmlResponseDetails(response)
+	if title != "" {
+		message += fmt.Sprintf(", page title: %q", title)
 	}
-	return "", fmt.Errorf("could not extract a CSRF token from the host")
+	message += ")"
+	if isHTML {
+		message += "; the server may have returned a bot-protection challenge"
+	}
+	return "", errors.New(message)
 }
 
 func (w *webClient) sessionAuthenticated() (bool, bool) {
