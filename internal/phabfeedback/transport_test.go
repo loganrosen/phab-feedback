@@ -21,7 +21,7 @@ func TestHTTPTransportPropagatesContext(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader("ok")),
 		}, nil
 	})}
-	response, err := (httpTransport{client: client, ctx: ctx}).Request(http.MethodGet, "https://phab.example", nil, nil)
+	response, err := (httpTransport{client: client}).Request(ctx, http.MethodGet, "https://phab.example", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,8 @@ func TestHTTPTransportAddsDefaultAcceptHeader(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader(`{"result":{}}`)),
 		}, nil
 	})}
-	_, err := (httpTransport{client: client, ctx: t.Context()}).Request(
+	_, err := (httpTransport{client: client}).Request(
+		t.Context(),
 		http.MethodPost,
 		"https://we.phorge.it/api/user.whoami",
 		http.Header{"Content-Type": {"application/x-www-form-urlencoded"}},
@@ -104,7 +105,8 @@ func TestHTTPTransportPreservesExplicitAcceptHeader(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader(`{"result":{}}`)),
 		}, nil
 	})}
-	_, err := (httpTransport{client: client, ctx: t.Context()}).Request(
+	_, err := (httpTransport{client: client}).Request(
+		t.Context(),
 		http.MethodGet,
 		"https://phab.example/api/test",
 		http.Header{"Accept": {"application/json"}},
@@ -125,7 +127,8 @@ func TestHTTPTransportReportsHTMLTitleForErrorStatus(t *testing.T) {
 			)),
 		}, nil
 	})}
-	_, err := (httpTransport{client: client, ctx: t.Context()}).Request(
+	_, err := (httpTransport{client: client}).Request(
+		t.Context(),
 		http.MethodGet,
 		"https://phab.example/api/test",
 		nil,

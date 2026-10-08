@@ -142,7 +142,14 @@ func (app *appOptions) doctor(ctx context.Context) doctorResult {
 	}
 	result := doctorResult{Host: base.host, OK: true}
 	result.Checks = append(result.Checks, doctorCheck{Name: "host", Status: "ok", Message: "resolved " + base.host})
-	requests := httpTransport{client: defaultHTTPClient(), ctx: ctx}
+	client := httpTransport{client: defaultHTTPClient()}
+	requests := transportFunc(func(
+		method, target string,
+		headers http.Header,
+		data io.Reader,
+	) (transportResponse, error) {
+		return client.Request(ctx, method, target, headers, data)
+	})
 
 	tokenOptions := options
 	tokenOptions.requireToken = true
@@ -611,7 +618,14 @@ func (app *appOptions) execute(
 	if err != nil {
 		return err
 	}
-	requests := httpTransport{client: defaultHTTPClient(), ctx: ctx}
+	client := httpTransport{client: defaultHTTPClient()}
+	requests := transportFunc(func(
+		method, target string,
+		headers http.Header,
+		data io.Reader,
+	) (transportResponse, error) {
+		return client.Request(ctx, method, target, headers, data)
+	})
 	service := &feedbackService{}
 	if requireToken {
 		service.conduit = &conduitClient{host: credentials.host, token: credentials.token, transport: requests}

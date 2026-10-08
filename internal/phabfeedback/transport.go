@@ -29,7 +29,6 @@ func (f transportFunc) Request(
 
 type httpTransport struct {
 	client *http.Client
-	ctx    context.Context
 }
 
 type transportResponse struct {
@@ -39,11 +38,12 @@ type transportResponse struct {
 }
 
 func (t httpTransport) Request(
+	ctx context.Context,
 	method, target string,
 	headers http.Header,
 	data io.Reader,
 ) (transportResponse, error) {
-	request, err := http.NewRequestWithContext(t.ctx, method, target, data)
+	request, err := http.NewRequestWithContext(ctx, method, target, data)
 	if err != nil {
 		return transportResponse{}, fmt.Errorf("create request: %w", err)
 	}
