@@ -469,6 +469,10 @@ semantics. `skill show` also works without installing the discovery stub.
   `phab-feedback --host https://phabricator.example.com D123 --timeline`.
 - Run `phab-feedback doctor` to identify whether a failure is in host
   configuration, Conduit authentication, or the browser session.
+- Requests include `Accept: */*` for compatibility with bot-protection
+  middleware that otherwise challenges non-browser clients. If a host still
+  returns HTML instead of Conduit JSON, the error includes the HTTP status and
+  page title so the host administrator can identify the challenge policy.
 - If a web command reports that it needs a session, set
   `PHAB_FEEDBACK_SESSION_COOKIE` or use a logged-in Firefox profile with
   `--firefox-profile`.

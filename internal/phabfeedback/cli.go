@@ -143,7 +143,11 @@ func (app *appOptions) doctor(ctx context.Context) doctorResult {
 	result := doctorResult{Host: base.host, OK: true}
 	result.Checks = append(result.Checks, doctorCheck{Name: "host", Status: "ok", Message: "resolved " + base.host})
 	client := httpTransport{client: defaultHTTPClient()}
-	requests := transportFunc(func(method, target string, headers http.Header, data io.Reader) ([]byte, error) {
+	requests := transportFunc(func(
+		method, target string,
+		headers http.Header,
+		data io.Reader,
+	) (transportResponse, error) {
 		return client.Request(ctx, method, target, headers, data)
 	})
 
@@ -161,13 +165,17 @@ func (app *appOptions) doctor(ctx context.Context) doctorResult {
 		}
 		if err := conduit.call("user.whoami", map[string]any{}, &identity); err != nil {
 			result.OK = false
-			result.Checks = append(result.Checks, doctorCheck{Name: "conduit", Status: "error", Message: err.Error()})
+			result.Checks = append(result.Checks,
+				doctorCheck{Name: "conduit", Status: "error", Message: err.Error()},
+			)
 		} else {
 			name := identity.UserName
 			if identity.RealName != "" {
 				name = identity.RealName + " (" + identity.UserName + ")"
 			}
-			result.Checks = append(result.Checks, doctorCheck{Name: "conduit", Status: "ok", Message: "authenticated as " + name})
+			result.Checks = append(result.Checks,
+				doctorCheck{Name: "conduit", Status: "ok", Message: "authenticated as " + name},
+			)
 		}
 	}
 
@@ -611,7 +619,11 @@ func (app *appOptions) execute(
 		return err
 	}
 	client := httpTransport{client: defaultHTTPClient()}
-	requests := transportFunc(func(method, target string, headers http.Header, data io.Reader) ([]byte, error) {
+	requests := transportFunc(func(
+		method, target string,
+		headers http.Header,
+		data io.Reader,
+	) (transportResponse, error) {
 		return client.Request(ctx, method, target, headers, data)
 	})
 	service := &feedbackService{}

@@ -21,12 +21,195 @@ func TestHTTPTransportPropagatesContext(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader("ok")),
 		}, nil
 	})}
-	body, err := (httpTransport{client: client}).Request(ctx, http.MethodGet, "https://phab.example", nil, nil)
+	response, err := (httpTransport{client: client}).Request(ctx, http.MethodGet, "https://phab.example", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(body) != "ok" {
-		t.Fatalf("unexpected response: %q", body)
+	if response.StatusCode != http.StatusOK || string(response.Body) != "ok" {
+		t.Fatalf("unexpected response: %+v", response)
+	}
+}
+
+func TestHTMLResponseDetails(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		wantTitle   string
+		wantHTML    bool
+	}{
+		{
+			name:        "content type",
+			contentType: "text/html; charset=utf-8",
+			body:        `<html><title>Making sure you&#39;re not a bot!</title></html>`,
+			wantTitle:   "Making sure you're not a bot!",
+			wantHTML:    true,
+		},
+		{
+			name:      "body prefix",
+			body:      " \n<!doctype html><title> Challenge \n page </title>",
+			wantTitle: "Challenge page",
+			wantHTML:  true,
+		},
+		{
+			name:        "json",
+			contentType: "application/json",
+			body:        `{"result":{}}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			title, isHTML := htmlResponseDetails(transportResponse{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": {test.contentType}},
+				Body:       []byte(test.body),
+			})
+			if title != test.wantTitle || isHTML != test.wantHTML {
+				t.Fatalf("html details = %q, %t; want %q, %t", title, isHTML, test.wantTitle, test.wantHTML)
+			}
+		})
+	}
+}
+
+func TestHTTPTransportAddsDefaultAcceptHeader(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if got := request.Header.Get("Accept"); got != "*/*" {
+			t.Fatalf("Accept = %q, want */*", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"result":{}}`)),
+		}, nil
+	})}
+	_, err := (httpTransport{client: client}).Request(
+		t.Context(),
+		http.MethodPost,
+		"https://we.phorge.it/api/user.whoami",
+		http.Header{"Content-Type": {"application/x-www-form-urlencoded"}},
+		strings.NewReader("params={}"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHTTPTransportPreservesExplicitAcceptHeader(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if got := request.Header.Get("Accept"); got != "application/json" {
+			t.Fatalf("Accept = %q, want application/json", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"result":{}}`)),
+		}, nil
+	})}
+	_, err := (httpTransport{client: client}).Request(
+		t.Context(),
+		http.MethodGet,
+		"https://phab.example/api/test",
+		http.Header{"Accept": {"application/json"}},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHTTPTransportReportsHTMLTitleForErrorStatus(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"Content-Type": {"text/html"}},
+			Body: io.NopCloser(strings.NewReader(
+				`<html><title>Making sure you're not a bot!</title></html>`,
+			)),
+		}, nil
+	})}
+	_, err := (httpTransport{client: client}).Request(
+		t.Context(),
+		http.MethodGet,
+		"https://phab.example/api/test",
+		nil,
+		nil,
+	)
+	if err == nil ||
+		!strings.Contains(err.Error(), "HTTP 503") ||
+		!strings.Contains(err.Error(), "Making sure you're not a bot!") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConduitReportsHTMLChallenge(t *testing.T) {
+	requests := transportFunc(func(
+		string,
+		string,
+		http.Header,
+		io.Reader,
+	) (transportResponse, error) {
+		return transportResponse{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"text/html"}},
+			Body:       []byte(`<html><title>Making sure you're not a bot!</title></html>`),
+		}, nil
+	})
+	client := conduitClient{host: "https://we.phorge.it", token: "token", transport: requests}
+	var result any
+	err := client.call("user.whoami", map[string]any{}, &result)
+	if err == nil ||
+		!strings.Contains(err.Error(), "HTTP 200") ||
+		!strings.Contains(err.Error(), "Making sure you're not a bot!") ||
+		!strings.Contains(err.Error(), "bot-protection challenge") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConduitKeepsInvalidJSONErrorForNonHTMLResponse(t *testing.T) {
+	requests := transportFunc(func(
+		string,
+		string,
+		http.Header,
+		io.Reader,
+	) (transportResponse, error) {
+		return transportResponse{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       []byte("not json"),
+		}, nil
+	})
+	client := conduitClient{host: "https://phab.example", token: "token", transport: requests}
+	var result any
+	err := client.call("user.whoami", map[string]any{}, &result)
+	if err == nil ||
+		!strings.Contains(err.Error(), "invalid JSON response") ||
+		strings.Contains(err.Error(), "bot-protection") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWebCSRFErrorIncludesHTMLTitle(t *testing.T) {
+	requests := transportFunc(func(
+		string,
+		string,
+		http.Header,
+		io.Reader,
+	) (transportResponse, error) {
+		return transportResponse{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"text/html"}},
+			Body:       []byte(`<html><title>Making sure you're not a bot!</title></html>`),
+		}, nil
+	})
+	client := webClient{host: "https://phab.example", cookie: "phsid=cookie", transport: requests}
+	_, err := client.csrf()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, want := range []string{"HTTP 200", `page title: "Making sure you're not a bot!"`, "bot-protection challenge"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q missing %q", err, want)
+		}
 	}
 }
 

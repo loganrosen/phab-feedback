@@ -38,25 +38,36 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 	return f(request)
 }
 
-func (f *fakeTransport) Request(method, target string, headers http.Header, data io.Reader) ([]byte, error) {
+func (f *fakeTransport) Request(
+	method, target string,
+	headers http.Header,
+	data io.Reader,
+) (transportResponse, error) {
 	var body []byte
 	if data != nil {
 		body, _ = io.ReadAll(data)
 	}
 	f.requests = append(f.requests, recordedRequest{method, target, headers.Clone(), body})
 	if len(f.responses) == 0 {
-		return nil, errors.New("unexpected request")
+		return transportResponse{}, errors.New("unexpected request")
 	}
 	response := f.responses[0]
 	f.responses = f.responses[1:]
 	if err, ok := response.(error); ok {
-		return nil, err
+		return transportResponse{}, err
+	}
+	if result, ok := response.(transportResponse); ok {
+		return result, nil
 	}
 	responseBody, ok := response.([]byte)
 	if !ok {
-		return nil, fmt.Errorf("unexpected response type %T", response)
+		return transportResponse{}, fmt.Errorf("unexpected response type %T", response)
 	}
-	return responseBody, nil
+	return transportResponse{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       responseBody,
+	}, nil
 }
 
 func response(payload any) []byte {
