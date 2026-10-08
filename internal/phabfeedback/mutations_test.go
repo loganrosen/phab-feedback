@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestReplyDoneAndSubmissionPayloads(t *testing.T) {
@@ -720,6 +722,21 @@ func TestListQueriesEveryArcrcHostWhenAmbiguous(t *testing.T) {
 	}
 	if len(result.Hosts) != 3 || users[first.URL] != "first" || users[second.URL] != "second" {
 		t.Fatalf("unexpected hosts: %+v", result.Hosts)
+	}
+
+	stdout.Reset()
+	if status := Run([]string{"list"}, strings.NewReader(""), &stdout, &stderr); status != 1 || stderr.Len() != 0 {
+		t.Fatalf("text status=%d stderr=%q", status, stderr.String())
+	}
+	text := ansi.Strip(stdout.String())
+	for _, expected := range []string{
+		first.URL + "\n0 revisions (responsible, open)",
+		second.URL + "\n0 revisions (responsible, open)",
+		"https://broken.invalid\nerror: no Conduit token found for https://broken.invalid",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("text output missing %q:\n%s", expected, text)
+		}
 	}
 
 	stdout.Reset()
