@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -141,7 +142,7 @@ func (app *appOptions) doctor(ctx context.Context) doctorResult {
 	}
 	result := doctorResult{Host: base.host, OK: true}
 	result.Checks = append(result.Checks, doctorCheck{Name: "host", Status: "ok", Message: "resolved " + base.host})
-	client := httpTransport{client: defaultHTTPClient()}
+	client := httpTransport{client: defaultHTTPClient(base.host)}
 	requests := transportFunc(func(
 		method, target string,
 		headers http.Header,
@@ -629,7 +630,7 @@ func (app *appOptions) execute(
 }
 
 func newFeedbackService(ctx context.Context, credentials credentials, requireToken, requireCookie bool) *feedbackService {
-	client := httpTransport{client: defaultHTTPClient()}
+	client := httpTransport{client: defaultHTTPClient(credentials.host)}
 	requests := transportFunc(func(
 		method, target string,
 		headers http.Header,
@@ -776,6 +777,24 @@ func parseTime(value string) (int64, error) {
 	return 0, fmt.Errorf("--modified-after must be an ISO 8601 time or Unix timestamp")
 }
 
-func defaultHTTPClient() *http.Client {
-	return &http.Client{Timeout: 60 * time.Second}
+func defaultHTTPClient(host string) *http.Client {
+	client := &http.Client{Timeout: 60 * time.Second}
+	parsed, err := url.Parse(host)
+	if err != nil || !strings.EqualFold(parsed.Hostname(), "phabricator.services.mozilla.com") {
+		return client
+	}
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return client
+	}
+	requests := base.Clone()
+	// Mozilla's front end rejects Go HTTP/2 requests with persistent HTTP 429 responses.
+	requests.Protocols = new(http.Protocols)
+	requests.Protocols.SetHTTP1(true)
+	// Clone retains ALPN settings from an initialized HTTP/2 transport.
+	if requests.TLSClientConfig != nil {
+		requests.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	}
+	client.Transport = requests
+	return client
 }
