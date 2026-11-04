@@ -11,9 +11,87 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 )
+
+func mozillaHTTP1Handler(t *testing.T) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.ProtoMajor != 1 {
+			http.Error(writer, "HTTP/2 rejected", http.StatusTooManyRequests)
+			return
+		}
+		if got := request.Header.Get("Accept"); got != "*/*" {
+			t.Errorf("Accept = %q, want */*", got)
+		}
+		switch request.Method + " " + request.URL.Path {
+		case "POST /api/user.whoami":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write(conduitResult(map[string]any{
+				"phid": "PHID-USER-test", "userName": "test", "realName": "Test User",
+			}))
+		case "GET /":
+			writer.Header().Set("Content-Type", "text/html")
+			_, _ = io.WriteString(writer, `<input name="__csrf__" value="B@csrf123"><a href="/logout/">Log out</a>`)
+		default:
+			http.NotFound(writer, request)
+		}
+	})
+}
+
+func TestDoctorMozillaUsesHTTP1(t *testing.T) {
+	isolateCredentialFiles(t)
+	base := useLocalHTTP2Transport(t, mozillaHTTP1Handler(t))
+	const host = "https://phabricator.services.mozilla.com"
+	t.Setenv("PHAB_FEEDBACK_HOST", host)
+	t.Setenv("PHAB_FEEDBACK_TOKEN", "api-token")
+	t.Setenv("PHAB_FEEDBACK_SESSION_COOKIE", "session-cookie")
+	t.Setenv("PHAB_FEEDBACK_ARCRC", filepath.Join(t.TempDir(), "missing-arcrc"))
+
+	// The unmodified default transport reproduces the host's HTTP/2 rejection.
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, host+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := (&http.Client{Transport: base, Timeout: 5 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusTooManyRequests || response.ProtoMajor != 2 {
+		t.Fatalf("baseline = HTTP %d over %s, want 429 over HTTP/2", response.StatusCode, response.Proto)
+	}
+
+	result := (&appOptions{}).doctor(t.Context())
+	if !result.OK || len(result.Checks) != 4 ||
+		result.Checks[1].Status != "ok" || result.Checks[2].Status != "ok" {
+		t.Fatalf("Mozilla doctor failed: %#v", result)
+	}
+}
+
+func TestNewFeedbackServiceMozillaUsesHTTP1(t *testing.T) {
+	useLocalHTTP2Transport(t, mozillaHTTP1Handler(t))
+	service := newFeedbackService(t.Context(), credentials{
+		host: "https://phabricator.services.mozilla.com", token: "api-token", cookie: "session-cookie",
+	}, true, true)
+	var identity struct {
+		UserName string `json:"userName"`
+	}
+	if err := service.conduit.call("user.whoami", map[string]any{}, &identity); err != nil {
+		t.Fatal(err)
+	}
+	if identity.UserName != "test" {
+		t.Fatalf("identity = %#v, want test", identity)
+	}
+	if _, err := service.web.csrf(); err != nil {
+		t.Fatal(err)
+	}
+	if authenticated, loaded := service.web.sessionAuthenticated(); !authenticated || !loaded {
+		t.Fatal("Mozilla web session was not authenticated")
+	}
+}
 
 func TestReplyDoneAndSubmissionPayloads(t *testing.T) {
 	inline := transaction(1, "inline", 20, nil)
