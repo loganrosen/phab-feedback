@@ -415,6 +415,28 @@ func renderThreads(result threadsResult) string {
 func renderTimeline(result timelineResult) string {
 	lines := []string{headerStyle.Render(fmt.Sprintf("D%d: %d feedback events", result.RevisionID, len(result.Events)))}
 	for _, event := range result.Events {
+		if event.Kind == "mention" {
+			author, object := "", ""
+			if event.Author != nil {
+				author = safe(orDefault(event.Author.Name, event.Author.PHID))
+			}
+			if event.Object != nil {
+				object = safe(orDefault(event.Object.FullName, stringValue(orDefault(event.Object.Name, event.Object.PHID))))
+				if uri := stringValue(event.Object.URI); uri != "" {
+					object += "  " + safe(uri)
+				}
+			}
+			action := "mentioned this in"
+			if event.Operation == "remove" {
+				action = "removed mention from"
+			}
+			lines = append(lines, fmt.Sprintf("%s  transaction #%v  %s  %s %s %s",
+				decisionStyle("mention").Render("mention"), event.TransactionID, safe(event.Created), author, action, object))
+			if content := stringValue(event.Content); content != "" {
+				lines = append(lines, "  "+safe(content))
+			}
+			continue
+		}
 		locationText := ""
 		if event.Kind == "inline" {
 			locationText = "  " + detailStyle.Render(location(event))

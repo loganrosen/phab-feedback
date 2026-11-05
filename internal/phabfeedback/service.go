@@ -76,6 +76,17 @@ func (s *feedbackService) revisionTransactions(revision string) ([]map[string]an
 }
 
 func (s *feedbackService) timeline(revision string) (timelineResult, error) {
+	result, err := s.loadTimeline(revision)
+	if err != nil {
+		return timelineResult{}, err
+	}
+	if err := s.hydrateMentionHandles(&result); err != nil {
+		return timelineResult{}, err
+	}
+	return result, nil
+}
+
+func (s *feedbackService) loadTimeline(revision string) (timelineResult, error) {
 	revisionID, _, currentDiff, err := s.revisionContext(revision, false)
 	if err != nil {
 		return timelineResult{}, err
@@ -203,7 +214,7 @@ func (s *feedbackService) threads(revision, state string, currentDiffOnly bool) 
 	if state != "unresolved" && state != "resolved" && state != "all" {
 		return threadsResult{}, fmt.Errorf("unsupported thread state: %s", state)
 	}
-	timeline, err := s.timeline(revision)
+	timeline, err := s.loadTimeline(revision)
 	if err != nil {
 		return threadsResult{}, err
 	}
@@ -245,8 +256,35 @@ func buildTimeline(revisionID int, currentDiff map[string]any, transactions []ma
 	}
 	general := make([]feedbackEvent, 0)
 	inline := make([]feedbackEvent, 0)
+	mentions := make([]feedbackEvent, 0)
 	for _, transaction := range transactions {
 		kind := stringValue(transaction["type"])
+		if kind == "mentioned-in" {
+			fields, _ := mapValue(transaction["fields"])
+			operations, _ := sliceValue(fields["operations"])
+			for _, raw := range operations {
+				operation, ok := mapValue(raw)
+				if !ok || stringValue(operation["phid"]) == "" {
+					continue
+				}
+				action := stringValue(operation["operation"])
+				if action != "add" && action != "remove" {
+					continue
+				}
+				event := feedbackEvent{
+					Kind: "mention", TransactionID: transaction["id"],
+					TransactionPHID: transaction["phid"], Created: timestampValue(transaction["dateCreated"]),
+					Author: &handleInfo{PHID: stringValue(transaction["authorPHID"])},
+					Object: &handleInfo{PHID: stringValue(operation["phid"])}, Operation: action,
+				}
+				if comment := activeComment(transaction); comment != nil {
+					content, _ := mapValue(comment["content"])
+					event.Content = content["raw"]
+				}
+				mentions = append(mentions, event)
+			}
+			continue
+		}
 		if kind != "comment" && kind != "inline" {
 			continue
 		}
@@ -277,7 +315,7 @@ func buildTimeline(revisionID int, currentDiff map[string]any, transactions []ma
 	}
 	sortFeedbackEvents(general)
 	sortFeedbackEvents(inline)
-	events := append(append([]feedbackEvent{}, general...), inline...)
+	events := append(append(append([]feedbackEvent{}, general...), inline...), mentions...)
 	sortFeedbackEvents(events)
 	fields, _ := mapValue(currentDiff["fields"])
 	return timelineResult{
@@ -285,6 +323,40 @@ func buildTimeline(revisionID int, currentDiff map[string]any, transactions []ma
 		CurrentDiff: diffInfo{ID: currentDiff["id"], PHID: currentDiffPHID, Created: timestampValue(fields["dateCreated"])},
 		Events:      events, GeneralComments: general, InlineComments: inline,
 	}
+}
+
+func (s *feedbackService) hydrateMentionHandles(result *timelineResult) error {
+	phidSet := map[string]bool{}
+	for _, event := range result.Events {
+		if event.Kind != "mention" {
+			continue
+		}
+		for _, handle := range []*handleInfo{event.Author, event.Object} {
+			if handle != nil && handle.PHID != "" {
+				phidSet[handle.PHID] = true
+			}
+		}
+	}
+	handles, err := s.queryHandles(phidSet)
+	if err != nil {
+		return err
+	}
+	for _, event := range result.Events {
+		if event.Kind != "mention" {
+			continue
+		}
+		for _, handle := range []*handleInfo{event.Author, event.Object} {
+			if handle != nil {
+				if data, ok := handles[handle.PHID]; ok {
+					*handle = handleInfo{
+						PHID: handle.PHID, Name: data["name"], FullName: data["fullName"],
+						Type: data["type"], TypeName: data["typeName"], Status: data["status"], URI: data["uri"],
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (s *feedbackService) revisionContext(revision string, includeReviewers bool) (int, map[string]any, map[string]any, error) {
@@ -352,6 +424,10 @@ func (s *feedbackService) hydrateRevisionHandles(revisions []map[string]any) (ma
 			}
 		}
 	}
+	return s.queryHandles(phidSet)
+}
+
+func (s *feedbackService) queryHandles(phidSet map[string]bool) (map[string]map[string]any, error) {
 	phids := make([]string, 0, len(phidSet))
 	for phid := range phidSet {
 		phids = append(phids, phid)
