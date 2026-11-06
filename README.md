@@ -210,6 +210,16 @@ reported under `orphan_replies` rather than attached by guesswork. Every root,
 reply, and orphan retains its timeline `id`, PHID, diff, path, line, and direct
 parent fields.
 
+`--timeline` also includes incoming cross-references as `kind: "mention"`
+events when the server exports `mentioned-in` transactions. These carry the
+transaction ID, timestamp, operation (`add` or `remove`), author, and linked
+object handle (including its title and URL when accessible). Any available
+transaction comment is retained as `content`. Mention events have no comment
+`id` or `phid`, do not affect feedback counts or threads, and are not reply or
+Done targets. Outgoing links in comments remain ordinary comments. Older
+servers may return cross-references with a null transaction type and empty
+fields; those cannot be identified reliably and are not included.
+
 For structured output:
 
 ```bash

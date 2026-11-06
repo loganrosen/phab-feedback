@@ -103,22 +103,25 @@ type diffInfo struct {
 }
 
 type feedbackEvent struct {
-	Kind               string `json:"kind"`
-	ID                 any    `json:"id"`
-	PHID               any    `json:"phid"`
-	TransactionID      any    `json:"transaction_id"`
-	TransactionPHID    any    `json:"transaction_phid"`
-	Created            any    `json:"created"`
-	Content            any    `json:"content"`
-	DiffID             any    `json:"diff_id,omitempty"`
-	DiffPHID           any    `json:"diff_phid,omitempty"`
-	OnCurrentDiff      bool   `json:"on_current_diff,omitempty"`
-	Path               any    `json:"path,omitempty"`
-	Line               any    `json:"line,omitempty"`
-	IsDone             any    `json:"is_done,omitempty"`
-	ReplyToCommentID   any    `json:"reply_to_comment_id,omitempty"`
-	ReplyToCommentPHID any    `json:"reply_to_comment_phid,omitempty"`
-	OrphanReason       string `json:"orphan_reason,omitempty"`
+	Kind               string      `json:"kind"`
+	ID                 any         `json:"id"`
+	PHID               any         `json:"phid"`
+	TransactionID      any         `json:"transaction_id"`
+	TransactionPHID    any         `json:"transaction_phid"`
+	Created            any         `json:"created"`
+	Content            any         `json:"content"`
+	DiffID             any         `json:"diff_id,omitempty"`
+	DiffPHID           any         `json:"diff_phid,omitempty"`
+	OnCurrentDiff      bool        `json:"on_current_diff,omitempty"`
+	Path               any         `json:"path,omitempty"`
+	Line               any         `json:"line,omitempty"`
+	IsDone             any         `json:"is_done,omitempty"`
+	ReplyToCommentID   any         `json:"reply_to_comment_id,omitempty"`
+	ReplyToCommentPHID any         `json:"reply_to_comment_phid,omitempty"`
+	OrphanReason       string      `json:"orphan_reason,omitempty"`
+	Author             *handleInfo `json:"-"`
+	Object             *handleInfo `json:"-"`
+	Operation          string      `json:"-"`
 }
 
 func (event feedbackEvent) MarshalJSON() ([]byte, error) {
@@ -126,6 +129,13 @@ func (event feedbackEvent) MarshalJSON() ([]byte, error) {
 		"kind": event.Kind, "id": event.ID, "phid": event.PHID,
 		"transaction_id": event.TransactionID, "transaction_phid": event.TransactionPHID,
 		"created": event.Created, "content": event.Content,
+	}
+	if event.Kind == "mention" {
+		delete(result, "id")
+		delete(result, "phid")
+		result["author"] = event.Author
+		result["object"] = event.Object
+		result["operation"] = event.Operation
 	}
 	if event.Kind == "inline" {
 		result["diff_id"] = event.DiffID
