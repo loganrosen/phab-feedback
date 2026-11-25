@@ -2,6 +2,7 @@ package phabfeedback
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -791,9 +792,14 @@ func defaultHTTPClient(host string) *http.Client {
 	// Mozilla's front end rejects Go HTTP/2 requests with persistent HTTP 429 responses.
 	requests.Protocols = new(http.Protocols)
 	requests.Protocols.SetHTTP1(true)
+	if requests.TLSClientConfig == nil {
+		requests.TLSClientConfig = new(tls.Config)
+	}
 	// Clone retains ALPN settings from an initialized HTTP/2 transport.
-	if requests.TLSClientConfig != nil {
-		requests.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	requests.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	// Mozilla also returns 429 when Go advertises hybrid ML-KEM key exchanges.
+	requests.TLSClientConfig.CurvePreferences = []tls.CurveID{
+		tls.X25519, tls.CurveP256, tls.CurveP384, tls.CurveP521,
 	}
 	client.Transport = requests
 	return client

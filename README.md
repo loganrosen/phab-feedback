@@ -491,10 +491,12 @@ semantics. `skill show` also works without installing the discovery stub.
 - Run `phab-feedback doctor` to identify whether a failure is in host
   configuration, Conduit authentication, or the browser session.
 - Requests to `phabricator.services.mozilla.com` automatically use HTTP/1.1
-  because Mozilla's front end returns persistent HTTP 429 responses to Go's
-  HTTP/2 client. This applies to Conduit and web requests, including `doctor`;
-  no `GODEBUG=http2client=0` workaround is needed. Other hosts retain the
-  default HTTP protocol behavior.
+  and classical TLS key exchanges because Mozilla's front end returns persistent
+  HTTP 429 responses to Go's HTTP/2 client and hybrid ML-KEM TLS key exchanges.
+  TLS certificate verification remains enabled, but post-quantum key exchange
+  is disabled for this host. This applies to Conduit and web requests, including
+  `doctor`; no `GODEBUG` workaround is needed. Other hosts retain the default
+  HTTP protocol and TLS key exchange behavior.
 - Requests include `Accept: */*` for compatibility with bot-protection
   middleware that otherwise challenges non-browser clients. If a host still
   returns HTML instead of Conduit JSON, the error includes the HTTP status and
