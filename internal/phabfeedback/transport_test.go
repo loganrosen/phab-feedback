@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,6 +20,11 @@ func useLocalHTTP2Transport(t *testing.T, handler http.Handler) *http.Transport 
 	t.Helper()
 	t.Setenv("GODEBUG", "http2client=1")
 	server := httptest.NewUnstartedServer(handler)
+	return useLocalHTTP2ServerTransport(t, server)
+}
+
+func useLocalHTTP2ServerTransport(t *testing.T, server *httptest.Server) *http.Transport {
+	t.Helper()
 	server.EnableHTTP2 = true
 	server.StartTLS()
 	t.Cleanup(server.Close)
@@ -49,6 +55,51 @@ func useLocalHTTP2Transport(t *testing.T, handler http.Handler) *http.Transport 
 		base.CloseIdleConnections()
 	})
 	return base
+}
+
+func TestMozillaHTTPClientAvoidsHybridTLSRateLimit(t *testing.T) {
+	t.Setenv("GODEBUG", "http2client=1,tlsmlkem=1,tlssecpmlkem=1")
+	var hybridClients sync.Map
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		hybrid, _ := hybridClients.Load(request.RemoteAddr)
+		if hybrid == true {
+			http.Error(writer, "rate limited", http.StatusTooManyRequests)
+			return
+		}
+		if request.ProtoMajor != 1 {
+			t.Errorf("protocol = %s, want HTTP/1.1", request.Proto)
+		}
+		_, _ = io.WriteString(writer, "ok")
+	}))
+	server.TLS = &tls.Config{GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		for _, curve := range hello.SupportedCurves {
+			switch curve {
+			case tls.X25519MLKEM768, tls.SecP256r1MLKEM768, tls.SecP384r1MLKEM1024:
+				hybridClients.Store(hello.Conn.RemoteAddr().String(), true)
+			}
+		}
+		return nil, nil
+	}}
+	base := useLocalHTTP2ServerTransport(t, server)
+	for _, host := range []string{"https://phab.example", "https://phabricator.services.mozilla.com"} {
+		client := defaultHTTPClient(host)
+		t.Cleanup(client.CloseIdleConnections)
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			response, err := (httpTransport{client: client}).Request(
+				t.Context(), method, host+"/api/test", nil, strings.NewReader("params={}"),
+			)
+			if host == "https://phab.example" {
+				if err == nil || !strings.Contains(err.Error(), "HTTP 429") {
+					t.Fatalf("baseline %s error = %v, want HTTP 429", method, err)
+				}
+			} else if err != nil || string(response.Body) != "ok" {
+				t.Fatalf("Mozilla %s response = %+v, error = %v", method, response, err)
+			}
+		}
+	}
+	if len(base.TLSClientConfig.CurvePreferences) != 0 {
+		t.Fatal("Mozilla client changed the global TLS curve preferences")
+	}
 }
 
 func TestDefaultHTTPClientNegotiatedProtocol(t *testing.T) {
