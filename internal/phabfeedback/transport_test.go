@@ -73,8 +73,7 @@ func TestMozillaHTTPClientAvoidsHybridTLSRateLimit(t *testing.T) {
 	}))
 	server.TLS = &tls.Config{GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 		for _, curve := range hello.SupportedCurves {
-			switch curve {
-			case tls.X25519MLKEM768, tls.SecP256r1MLKEM768, tls.SecP384r1MLKEM1024:
+			if curve == tls.X25519MLKEM768 || curve == tls.SecP256r1MLKEM768 || curve == tls.SecP384r1MLKEM1024 {
 				hybridClients.Store(hello.Conn.RemoteAddr().String(), true)
 			}
 		}
